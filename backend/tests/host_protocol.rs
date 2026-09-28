@@ -297,6 +297,7 @@ impl Peer {
         store: &mut FakeStore,
         method: &str,
         stage: Stage,
+        params: Value,
         payload: Vec<u8>,
     ) -> Result<Frame, PluginFault> {
         let id = self.next_id;
@@ -307,7 +308,7 @@ impl Peer {
                 message: Message::Call {
                     id,
                     method: method.into(),
-                    params: json!({}),
+                    params,
                     context: CallContext {
                         call_id: id,
                         instance_id: "quality-instance".into(),
@@ -369,9 +370,15 @@ impl Peer {
     }
 
     async fn reconcile(&mut self, store: &mut FakeStore) {
-        self.invoke(store, "plugin.reconcile", Stage::Maintenance, vec![])
-            .await
-            .unwrap();
+        self.invoke(
+            store,
+            "plugin.reconcile",
+            Stage::Maintenance,
+            json!({}),
+            vec![],
+        )
+        .await
+        .unwrap();
     }
 
     async fn command(&mut self, store: &mut FakeStore, name: &str) -> Result<Value, PluginFault> {
@@ -380,6 +387,7 @@ impl Peer {
                 store,
                 "command_line.execute",
                 Stage::CommandLine,
+                json!({}),
                 serde_json::to_vec(&json!({"name": name, "arguments": {}})).unwrap(),
             )
             .await?;
@@ -407,6 +415,60 @@ fn config() -> Config {
         max_quarantined_percent: 100,
         ..Config::default()
     }
+}
+
+#[tokio::test]
+async fn management_registers_relative_status_route_and_serves_it() {
+    let mut peer = Peer::start(&Config::default()).await;
+    let mut store = FakeStore::default();
+    let registration = peer
+        .invoke(
+            &mut store,
+            "management.register",
+            Stage::Registration,
+            json!({}),
+            vec![],
+        )
+        .await
+        .unwrap();
+    let registration: Value = serde_json::from_slice(&registration.payload).unwrap();
+    // 宿主要求相对路径；首斜杠会在安装时被拒绝。
+    assert_eq!(
+        registration["routes"],
+        json!([{"method": "GET", "path": "status", "request_content_types": [],
+            "response_content_types": ["application/json"]}])
+    );
+    assert!(
+        store.calls.is_empty(),
+        "registration must not call the host"
+    );
+    let response = peer
+        .invoke(
+            &mut store,
+            "management.handle",
+            Stage::Management,
+            json!({"method": "GET", "path": "status", "query": "", "content_type": null}),
+            vec![],
+        )
+        .await
+        .unwrap();
+    match response.message {
+        Message::Result { result, .. } => {
+            assert_eq!(
+                result,
+                json!({"status": 200, "content_type": "application/json"})
+            );
+        }
+        _ => panic!("expected management response"),
+    }
+    assert!(
+        serde_json::from_slice::<Value>(&response.payload)
+            .unwrap()
+            .is_object()
+    );
+    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.groups.change_members"), 0);
+    peer.shutdown().await;
 }
 
 #[tokio::test]
@@ -587,9 +649,15 @@ async fn failed_membership_change_is_reported_without_probe_execution() {
         ..FakeStore::default()
     };
     assert!(
-        peer.invoke(&mut store, "plugin.reconcile", Stage::Maintenance, vec![])
-            .await
-            .is_err()
+        peer.invoke(
+            &mut store,
+            "plugin.reconcile",
+            Stage::Maintenance,
+            json!({}),
+            vec![]
+        )
+        .await
+        .is_err()
     );
     assert_eq!(store.state["maintenance"].value["ok"], false);
     assert_eq!(store.count("host.model.execute"), 0);

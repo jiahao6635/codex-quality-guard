@@ -31,7 +31,7 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
             ManagementRegistration {
                 routes: vec![ManagementRoute {
                     method: "GET".into(),
-                    path: "/status".into(),
+                    path: "status".into(),
                     request_content_types: vec![],
                     response_content_types: vec!["application/json".into()],
                 }],
@@ -42,7 +42,7 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
             move |call| {
                 let config = Arc::clone(&status_config);
                 async move {
-                    if call.request.method != "GET" || call.request.path != "/status" {
+                    if call.request.method != "GET" || call.request.path != "status" {
                         return Err(host::fault("unknown_route"));
                     }
                     let value = engine::status(&call.host, &config).await?;
