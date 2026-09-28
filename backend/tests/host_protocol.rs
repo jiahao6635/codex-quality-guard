@@ -11,7 +11,8 @@ use codex_quality_guard::{
     state::{Phase, Record, Verdict},
 };
 use gateway_plugin_sdk::{
-    CallContext, ErrorCode, Frame, Handshake, Message, PROTOCOL_VERSION, PluginFault, Stage,
+    CallContext, ErrorCode, Frame, Handshake, Message, PROTOCOL_VERSION, Permission, PluginFault,
+    Stage,
     call::{
         host::{ModelEventBatch, StateRecord},
         model::{CanonicalEvent, ExecutionEvent, FinishReason},
@@ -237,6 +238,7 @@ struct Peer {
     input: ChildStdin,
     output: ChildStdout,
     next_id: u64,
+    permissions: BTreeSet<Permission>,
 }
 
 impl Peer {
@@ -251,6 +253,7 @@ impl Peer {
         let mut input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let manifest = manifest().unwrap();
+        let permissions = manifest.permissions;
         write_frame(
             &mut input,
             &Frame::control(Message::Hello {
@@ -262,7 +265,7 @@ impl Peer {
                     generation: 1,
                     incarnation: "test-incarnation".into(),
                     configuration: serde_json::to_value(config).unwrap(),
-                    permissions: manifest.permissions.into_iter().collect(),
+                    permissions: permissions.iter().copied().collect(),
                     contributes: manifest.contributes,
                 },
             }),
@@ -274,6 +277,7 @@ impl Peer {
             input,
             output,
             next_id: 1,
+            permissions,
         };
         assert!(matches!(
             peer.receive().await.message,
@@ -338,7 +342,21 @@ impl Peer {
                     params,
                 } => {
                     assert_eq!(parent_id, id);
-                    let reply = match store.callback(&method, params, &frame.payload) {
+                    // 与宿主一致：预算读取需要独立访问域，keys 权限不能替代。
+                    let result = if method == "host.keys.get_budget"
+                        && (!self.permissions.contains(&Permission::KeyBudgets)
+                            || !matches!(
+                                stage,
+                                Stage::Management | Stage::CommandLine | Stage::Maintenance
+                            )) {
+                        Err(PluginFault::new(
+                            ErrorCode::PermissionDenied,
+                            "host callback permission denied",
+                        ))
+                    } else {
+                        store.callback(&method, params, &frame.payload)
+                    };
+                    let reply = match result {
                         Ok((result, payload)) => Frame {
                             message: Message::Result {
                                 id: callback_id,
@@ -483,6 +501,23 @@ async fn disabled_status_round_trips_without_model_or_group_writes() {
     );
     assert_eq!(store.count("host.model.execute"), 0);
     assert_eq!(store.count("host.groups.change_members"), 0);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn budget_status_requires_the_permission_declared_by_the_manifest() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore::default();
+    peer.reconcile(&mut store).await;
+    let status = peer.command(&mut store, "status").await.unwrap();
+    assert_eq!(status["probe_budget_ok"], true);
+
+    assert!(peer.permissions.remove(&Permission::KeyBudgets));
+    let status = peer.command(&mut store, "status").await.unwrap();
+    assert_eq!(status["probe_budget_ok"], false);
+    let error = peer.command(&mut store, "tick").await.unwrap_err();
+    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(store.count("host.model.execute"), 0);
     peer.shutdown().await;
 }
 
