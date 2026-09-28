@@ -1,5 +1,6 @@
 use crate::{
     Config,
+    config::PROVIDER,
     host::{self, fault},
     scorer::{self, Score},
     state::{Phase, Record, Verdict},
@@ -38,7 +39,6 @@ struct Evidence {
 #[derive(Clone, Serialize, Deserialize)]
 struct AccountState {
     quality: Record,
-    last_sample: Option<Evidence>,
     #[serde(default)]
     history: Vec<Evidence>,
 }
@@ -58,7 +58,6 @@ async fn load(
     let version = stored.as_ref().map(|s| s.1);
     let mut value = stored.map(|s| s.0).unwrap_or(AccountState {
         quality: Record::new(c.tag(), host::now()),
-        last_sample: None,
         history: vec![],
     });
     if value.quality.config_tag != c.tag() {
@@ -175,7 +174,7 @@ async fn ensure_resources(host: &HostClient, c: &Config) -> Result<Resources, Pl
 }
 fn managed(account: &AccountFacts, c: &Config) -> bool {
     account.enabled
-        && account.provider_id == c.provider
+        && account.provider_id == PROVIDER
         && c.account_ids.contains(&account.account_id)
 }
 async fn change(
@@ -471,7 +470,6 @@ pub async fn tick(host: &HostClient, c: &Config) -> Result<Value, PluginFault> {
         score,
         error,
     };
-    s.last_sample = Some(evidence.clone());
     s.history.push(evidence);
     if s.history.len() > 12 {
         s.history.remove(0);
@@ -479,7 +477,7 @@ pub async fn tick(host: &HostClient, c: &Config) -> Result<Value, PluginFault> {
     // 精确 CAS；其他进程接管租约或改写记录时，旧结果不能覆盖新结论。
     host::put(host, &host::account_key(&id), &s, Some(claimed)).await?;
     Ok(
-        json!({"status":"sample_recorded","account_id":id,"model":c.model,"quality":s.quality,"sample":s.last_sample}),
+        json!({"status":"sample_recorded","account_id":id,"model":c.model,"quality":s.quality,"sample":s.history.last()}),
     )
 }
 fn classify(s: &Score, c: &Config) -> Verdict {
@@ -507,7 +505,7 @@ async fn execute(
         model: c.model.clone(),
         protocol: "openai".into(),
         operation: ModelOperation::Generate,
-        provider: Some(c.provider.clone()),
+        provider: Some(PROVIDER.into()),
         account_id: Some(account.into()),
         previous_response_id: None,
     };
@@ -625,7 +623,7 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
     for id in &c.account_ids {
         let (s, _) = load(host, id, c).await?;
         let account = accounts.iter().find(|a| a.account_id == *id);
-        records.push(json!({"account_id":id,"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.last_sample,"history":s.history,"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
+        records.push(json!({"account_id":id,"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
     }
     let scope_ok = if let Some(r) = &r {
         check_keys(host, r, c).await.is_ok()

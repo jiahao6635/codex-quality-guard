@@ -74,8 +74,6 @@ pub struct Record {
     #[serde(default)]
     round_verdict: Option<Verdict>,
     #[serde(default)]
-    round_candidate: String,
-    #[serde(default)]
     round_samples: usize,
     #[serde(default)]
     anomaly_round_count: u32,
@@ -107,7 +105,6 @@ impl Record {
             last_candidate: String::new(),
             sample_counter: 0,
             round_verdict: None,
-            round_candidate: String::new(),
             round_samples: 0,
             anomaly_round_count: 0,
             anomaly_candidate: String::new(),
@@ -187,6 +184,7 @@ impl Record {
             self.clear_anomalies();
         } else {
             if self.anomaly_candidate != candidate {
+                self.clear_round();
                 self.clear_anomalies();
                 self.anomaly_candidate = candidate.to_owned();
             }
@@ -195,14 +193,10 @@ impl Record {
             }
         }
 
-        let same_round = self.round_verdict == Some(verdict)
-            && (verdict != Verdict::Anomaly || self.round_candidate == candidate);
+        let same_round = self.round_verdict == Some(verdict);
         if !same_round {
             self.clear_round();
             self.round_verdict = Some(verdict);
-            if verdict == Verdict::Anomaly {
-                self.round_candidate = candidate.to_owned();
-            }
         }
         self.round_samples = self.round_samples.saturating_add(1);
         self.next_probe_at_ms = now;
@@ -274,7 +268,6 @@ impl Record {
 
     fn clear_round(&mut self) {
         self.round_verdict = None;
-        self.round_candidate.clear();
         self.round_samples = 0;
     }
 
@@ -342,6 +335,9 @@ mod tests {
         let now = record.next_probe_at_ms;
         record.observe(Verdict::Anomaly, "luna", now, &policy);
         record.observe(Verdict::Anomaly, "luna", now, &policy);
+        let mut legacy = serde_json::to_value(&record).unwrap();
+        legacy["round_candidate"] = serde_json::json!("luna");
+        record = serde_json::from_value(legacy).unwrap();
         record.observe(Verdict::Healthy, "astra", now, &policy);
         record.observe(Verdict::Anomaly, "luna", now, &policy);
         record.observe(Verdict::Anomaly, "other", now, &policy);

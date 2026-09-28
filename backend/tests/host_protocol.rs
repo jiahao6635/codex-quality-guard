@@ -431,7 +431,7 @@ async fn tick_locks_account_and_persists_unknown_evidence_across_restart() {
     let mut store = FakeStore::default();
     peer.reconcile(&mut store).await;
     let group_writes = store.count("host.groups.change_members");
-    peer.command(&mut store, "tick").await.unwrap();
+    let sample = peer.command(&mut store, "tick").await.unwrap();
     assert_eq!(store.count("host.model.execute"), 1);
     assert_eq!(
         store.count("host.groups.change_members"),
@@ -446,6 +446,10 @@ async fn tick_locks_account_and_persists_unknown_evidence_across_restart() {
         .value
         .clone();
     assert_eq!(persisted["quality"]["sample_counter"], 1);
+    assert!(persisted.get("last_sample").is_none());
+    assert_eq!(sample["sample"], persisted["history"][0]);
+    let status = peer.command(&mut store, "status").await.unwrap();
+    assert_eq!(status["accounts"][0]["last_sample"], sample["sample"]);
     assert!(
         !store.groups["healthy"].contains(ACCOUNT),
         "unknown sample cannot admit traffic"
@@ -493,7 +497,7 @@ async fn late_model_result_cannot_overwrite_a_replacement_worker_record() {
     );
     assert_eq!(record.value["quality"]["lease_id"], "replacement-worker");
     assert_eq!(record.value["quality"]["sample_counter"], 0);
-    assert!(record.value["last_sample"].is_null());
+    assert_eq!(record.value["history"], json!([]));
     peer.shutdown().await;
 }
 

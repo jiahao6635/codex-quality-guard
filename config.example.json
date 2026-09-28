@@ -2,7 +2,6 @@
   "enabled": false,
   "account_ids": [],
   "model": "gpt-6-astra",
-  "provider": "openai",
   "business_key_ids": [],
   "confidence_threshold": 0.99,
   "max_daily_attempts": 100,

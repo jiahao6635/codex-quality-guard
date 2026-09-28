@@ -6,7 +6,7 @@ Where MIT is offered as an alternative, this distribution selects MIT.
 Additional Unicode data terms are retained where required.
 
 ==============================================================================
-codex-quality-guard 0.1.0
+codex-quality-guard 0.1.1
 Source: This repository
 Declared license: MIT
 Included license: MIT

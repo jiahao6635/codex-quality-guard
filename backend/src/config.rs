@@ -3,13 +3,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
+pub(crate) const PROVIDER: &str = "openai";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub enabled: bool,
     pub account_ids: Vec<String>,
     pub model: String,
-    pub provider: String,
     pub business_key_ids: Vec<String>,
     pub confidence_threshold: f64,
     pub max_daily_attempts: u32,
@@ -26,7 +27,6 @@ impl Default for Config {
             enabled: false,
             account_ids: Vec::new(),
             model: "gpt-6-astra".into(),
-            provider: "openai".into(),
             business_key_ids: Vec::new(),
             confidence_threshold: 0.99,
             max_daily_attempts: 100,
@@ -57,7 +57,6 @@ impl Config {
             || self.account_ids.iter().collect::<BTreeSet<_>>().len() != self.account_ids.len()
             || self.model.is_empty()
             || self.model.len() > 128
-            || self.provider != "openai"
             || !(0.9..=1.0).contains(&self.confidence_threshold)
             || !(1..=10000).contains(&self.max_daily_attempts)
             || !(2048..=16384).contains(&self.max_output_tokens)
@@ -108,7 +107,7 @@ impl Config {
         let bytes = serde_json::to_vec(&(
             scorer::VERSION,
             &self.model,
-            &self.provider,
+            PROVIDER,
             self.confidence_threshold,
             &self.policy,
         ))
@@ -123,6 +122,11 @@ mod tests {
     #[test]
     fn reject_unbounded_budget_and_unknown_enabled_model() {
         assert!(Config::default().validate().is_ok());
+        // 删去单值配置不改变 0.1.0 的检测身份，避免无故重新准入。
+        assert_eq!(
+            Config::default().tag(),
+            "61f34960e91f3c8e0aec38cab975d29f16b41bcede4ce547190a7c0ca7493a8a"
+        );
         let config = Config {
             enabled: true,
             account_ids: vec!["acct_test".into()],
