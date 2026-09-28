@@ -1,0 +1,19 @@
+[Unit]
+Description=Codex Quality Guard probe tick
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 改为网关实际运行身份，保证配置、插件缓存和宿主数据目录权限一致。
+User=codex-proxy
+Group=codex-proxy
+EnvironmentFile=/etc/codex-quality-guard.env
+# 若网关依赖 EnvironmentFile，另加同一个文件；不要在此另建数据库或 Redis 配置。
+RuntimeDirectory=codex-quality-guard
+RuntimeDirectoryMode=0700
+ExecStart=/opt/codex-quality-guard/scripts/tick.sh
+# 单次插件命令由宿主管理 120 秒期限；给启动及写队列排空留下时间。
+TimeoutStartSec=180
+KillMode=control-group
+UMask=0077

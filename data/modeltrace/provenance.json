@@ -1,0 +1,24 @@
+{
+  "repository": "https://github.com/xqy2006/ModelTrace",
+  "commit": "df3a0f9d3e054c0dc02d6d586686db8daf8fa7c8",
+  "license": "MIT",
+  "attribution": "Copyright (c) 2026 xqy2006",
+  "files": {
+    "LICENSE": {
+      "upstream_path": "LICENSE",
+      "sha256": "238afb57e498990742f84b9ce6167b4e256ac06104a9938ce953bc41c14bea51"
+    },
+    "bank.json": {
+      "upstream_path": "data/unified_bank.json",
+      "sha256": "1c2cb74d372f9f0f30d0dabbb7b7a838660d2f769a88d0c8489e4c662e088c21"
+    },
+    "reference.mjs": {
+      "upstream_path": "static/fingerprint-core.js",
+      "sha256": "83fa5bd611e18f8339122582335123c8ea168ed242298bb31f4e363abeeb6e4a"
+    },
+    "challenge-reference.mjs": {
+      "upstream_path": "static/challenge-browser.js",
+      "sha256": "4a3868c9fe237cabde92f0d2bffaf32118f558f7a43fcc336874fecd2bf6be39"
+    }
+  }
+}

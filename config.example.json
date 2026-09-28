@@ -1,0 +1,25 @@
+{
+  "enabled": false,
+  "account_ids": [],
+  "model": "gpt-6-astra",
+  "provider": "openai",
+  "business_key_ids": [],
+  "confidence_threshold": 0.99,
+  "max_daily_attempts": 100,
+  "max_output_tokens": 4096,
+  "max_daily_output_tokens": 409600,
+  "probe_daily_usd": "5",
+  "probe_weekly_usd": "25",
+  "max_quarantined_percent": 50,
+  "policy": {
+    "samples_per_round": 3,
+    "anomaly_rounds": 2,
+    "recovery_rounds": 2,
+    "anomaly_spacing_ms": 300000,
+    "recovery_spacing_ms": 600000,
+    "healthy_interval_ms": 1800000,
+    "unknown_retry_ms": 300000,
+    "cooldown_initial_ms": 3600000,
+    "cooldown_max_ms": 21600000
+  }
+}

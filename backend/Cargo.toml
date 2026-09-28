@@ -1,0 +1,17 @@
+[package]
+name = "codex-quality-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+[dependencies]
+gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "e06ca56f935774505aed0bd0ec3a2bc475e5e502", features = ["io"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.10.9"
+tokio = { version = "1.52.3", default-features = false, features = ["io-std", "macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.52.3", features = ["process", "io-util"] }

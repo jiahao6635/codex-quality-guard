@@ -1,0 +1,11 @@
+[Unit]
+Description=Run one Codex Quality Guard probe at a time
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=30s
+AccuracySec=1s
+Unit=codex-quality-guard.service
+
+[Install]
+WantedBy=timers.target

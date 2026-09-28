@@ -1,0 +1,8 @@
+/backend/target/
+/dist/
+/.tools/
+*.env
+.env*
+.ssh*
+.DS_Store
+/.cache/
