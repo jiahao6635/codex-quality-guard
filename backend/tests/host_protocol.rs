@@ -1,7 +1,7 @@
 //! 真实插件子进程与 SDK 二进制帧联调；所有宿主数据和模型响应均在内存模拟。
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     process::Stdio,
     time::Duration,
 };
@@ -39,6 +39,9 @@ struct FakeStore {
     extra_account: bool,
     valid_model_output: bool,
     visual_output: Option<String>,
+    model_events: VecDeque<ExecutionEvent>,
+    stall_model_reads: bool,
+    malformed_model_read: bool,
     http_body: Option<Vec<u8>>,
     deny_budget: bool,
     fail_membership_read: bool,
@@ -227,7 +230,7 @@ impl FakeStore {
                 };
                 json!({"client_key_id": data["client_key_id"], "daily_limit_usd": daily, "weekly_limit_usd": "25", "daily_used_usd": "0", "weekly_used_usd": "0", "daily_resets_at_ms": null, "weekly_resets_at_ms": null})
             }
-            "host.model.execute" => {
+            "host.model.execute_stream" => {
                 self.model_accounts
                     .push(params["account_id"].as_str().unwrap().to_owned());
                 // 响应有终态但内容不属于题库；只验证请求归属和未知样本处理。
@@ -276,10 +279,34 @@ impl FakeStore {
                         reason: FinishReason::Stop,
                     }),
                 ];
+                self.model_events = events.into();
                 return Ok((
-                    json!({"request_id": "req_mock", "events": events.len()}),
-                    ModelEventBatch { events }.encode().unwrap(),
+                    json!({"request_id":"req_mock", "stream":"stream_mock"}),
+                    vec![],
                 ));
+            }
+            "host.model.stream_read" => {
+                assert_eq!(params["stream"], "stream_mock");
+                assert_eq!(params["maximum_bytes"], 1024 * 1024);
+                if self.malformed_model_read {
+                    return Ok((json!({"events":1,"end":false}), b"invalid-batch".to_vec()));
+                }
+                return match self.model_events.pop_front() {
+                    Some(event) => Ok((
+                        json!({"events":1,"end":false}),
+                        ModelEventBatch {
+                            events: vec![event],
+                        }
+                        .encode()
+                        .unwrap(),
+                    )),
+                    None => Ok((json!({"events":0,"end":true}), vec![])),
+                };
+            }
+            "host.model.stream_close" => {
+                assert_eq!(params["stream"], "stream_mock");
+                self.model_events.clear();
+                return Ok((json!({}), vec![]));
             }
             "host.log" => return Ok((json!({}), vec![])),
             _ => panic!("unexpected host callback: {method}"),
@@ -310,6 +337,7 @@ struct Peer {
     input: ChildStdin,
     output: ChildStdout,
     next_id: u64,
+    call_timeout_ms: u64,
 }
 
 impl Peer {
@@ -346,6 +374,7 @@ impl Peer {
             input,
             output,
             next_id: 1,
+            call_timeout_ms: 120000,
         };
         assert!(matches!(
             peer.receive().await.message,
@@ -387,7 +416,7 @@ impl Peer {
                         generation: 1,
                         incarnation: "test-incarnation".into(),
                         stage,
-                        timeout_ms: 120000,
+                        timeout_ms: self.call_timeout_ms,
                         resource_stream: false,
                         resource_scope_id: format!("scope-{id}"),
                         request_id: Some(format!("parent-{id}")),
@@ -401,6 +430,7 @@ impl Peer {
         )
         .await
         .unwrap();
+        let mut pending_model_read = None;
         loop {
             let frame = self.receive().await;
             match frame.message {
@@ -412,6 +442,11 @@ impl Peer {
                 } => {
                     assert_eq!(parent_id, id);
                     let result = store.callback(&method, params, &frame.payload);
+                    if method == "host.model.stream_read" && store.stall_model_reads {
+                        // Keep the read pending while allowing an independent close callback.
+                        pending_model_read = Some(callback_id);
+                        continue;
+                    }
                     let reply = match result {
                         Ok((result, payload)) => Frame {
                             message: Message::Result {
@@ -426,6 +461,24 @@ impl Peer {
                         }),
                     };
                     write_frame(&mut self.input, &reply).await.unwrap();
+                    if method == "host.model.stream_close"
+                        && let Some(callback_id) = pending_model_read.take()
+                    {
+                        // Close ACK precedes finalization of a read already holding the session.
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        write_frame(
+                            &mut self.input,
+                            &Frame::control(Message::Error {
+                                id: callback_id,
+                                error: PluginFault::new(
+                                    ErrorCode::Cancelled,
+                                    "model stream finalized",
+                                ),
+                            }),
+                        )
+                        .await
+                        .unwrap();
+                    }
                 }
                 Message::Result { id: result_id, .. } => {
                     assert_eq!(result_id, id);
@@ -551,7 +604,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
             .unwrap()
             .is_object()
     );
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     assert_eq!(store.count("host.groups.change_members"), 0);
     peer.shutdown().await;
 }
@@ -566,7 +619,7 @@ async fn disabled_status_round_trips_without_model_or_group_writes() {
             .unwrap()
             .is_object()
     );
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     assert_eq!(store.count("host.groups.change_members"), 0);
     peer.shutdown().await;
 }
@@ -584,7 +637,7 @@ async fn budget_failure_stops_probe() {
     assert_eq!(status["probe_budget_ok"], false);
     let error = peer.command(&mut store, "tick").await.unwrap_err();
     assert_eq!(error.code, ErrorCode::Rejected);
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     peer.shutdown().await;
 }
 
@@ -596,7 +649,7 @@ async fn tick_locks_account_and_persists_unknown_evidence_across_restart() {
     peer.reconcile(&mut store).await;
     let group_writes = store.count("host.groups.change_members");
     let sample = peer.command(&mut store, "tick").await.unwrap();
-    assert_eq!(store.count("host.model.execute"), 1);
+    assert_eq!(store.count("host.model.execute_stream"), 1);
     assert_eq!(
         store.count("host.groups.change_members"),
         group_writes,
@@ -646,7 +699,7 @@ async fn conflicting_probe_lease_cannot_issue_a_model_call() {
     peer.reconcile(&mut store).await;
     store.reject_account_writes = true;
     let _ = peer.command(&mut store, "tick").await;
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     peer.shutdown().await;
 }
 
@@ -658,7 +711,7 @@ async fn late_model_result_cannot_overwrite_a_replacement_worker_record() {
     let group_writes = store.count("host.groups.change_members");
     store.take_over_during_model = true;
     assert!(peer.command(&mut store, "tick").await.is_err());
-    assert_eq!(store.count("host.model.execute"), 1);
+    assert_eq!(store.count("host.model.execute_stream"), 1);
     assert_eq!(store.count("host.groups.change_members"), group_writes);
     let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
     let record = &store.state[&key];
@@ -690,7 +743,7 @@ async fn exhausted_daily_attempt_budget_releases_lease_without_model_or_group_wr
     });
     let result = peer.command(&mut store, "tick").await.unwrap();
     assert_eq!(result["status"], "daily_budget_exhausted");
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     assert_eq!(store.count("host.groups.change_members"), group_writes);
     let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
     assert_eq!(store.state[&key].value["quality"]["lease_id"], "");
@@ -706,7 +759,7 @@ async fn probe_key_budget_wider_than_configuration_stops_tick() {
     let group_writes = store.count("host.groups.change_members");
     store.probe_budget_too_wide = true;
     assert!(peer.command(&mut store, "tick").await.is_err());
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     assert_eq!(store.count("host.groups.change_members"), group_writes);
     peer.shutdown().await;
 }
@@ -733,7 +786,7 @@ async fn maintenance_removes_state_for_accounts_removed_from_configuration() {
     );
     assert!(!store.groups["probe"].contains(ACCOUNT));
     assert!(store.groups["probe"].contains("acct_probe_2"));
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     replacement.shutdown().await;
 }
 
@@ -745,7 +798,7 @@ async fn probe_key_scope_bypass_stops_tick_without_group_writes() {
     let group_writes = store.count("host.groups.change_members");
     store.bypass_probe_key_scope = true;
     assert!(peer.command(&mut store, "tick").await.is_err());
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     assert_eq!(store.count("host.groups.change_members"), group_writes);
     peer.shutdown().await;
 }
@@ -769,7 +822,7 @@ async fn failed_membership_change_is_reported_without_probe_execution() {
         .is_err()
     );
     assert_eq!(store.state["maintenance"].value["ok"], false);
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     peer.shutdown().await;
 }
 
@@ -786,7 +839,7 @@ async fn stale_membership_readback_does_not_claim_successful_isolation() {
         store.state["maintenance"].value["runtime_isolation_verified"],
         false
     );
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     peer.shutdown().await;
 }
 
@@ -826,7 +879,7 @@ async fn reconciliation_removes_cooling_accounts_and_restores_only_recovered_acc
         );
     }
     assert_eq!(
-        store.count("host.model.execute"),
+        store.count("host.model.execute_stream"),
         0,
         "maintenance cannot execute models"
     );
@@ -913,7 +966,7 @@ async fn explicit_accounts_are_isolated_and_do_not_bypass_due_time() {
     let command: Value = serde_json::from_slice(&response.payload).unwrap();
     let second: Value = serde_json::from_str(command["stdout"].as_str().unwrap()).unwrap();
     assert_eq!(second["account_id"], ACCOUNT);
-    assert_eq!(store.count("host.model.execute"), 2);
+    assert_eq!(store.count("host.model.execute_stream"), 2);
     assert_eq!(store.model_accounts, vec!["acct_probe_2", ACCOUNT]);
     // An explicit account cannot bypass its active lease.
     let leased_key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
@@ -927,7 +980,7 @@ async fn explicit_accounts_are_isolated_and_do_not_bypass_due_time() {
             .await
             .is_err()
     );
-    assert_eq!(store.count("host.model.execute"), 2);
+    assert_eq!(store.count("host.model.execute_stream"), 2);
     for id in [ACCOUNT, "acct_probe_2"] {
         let key = format!("account.{:x}", Sha256::digest(id.as_bytes()));
         assert_eq!(
@@ -973,7 +1026,7 @@ async fn automatic_probes_rotate_accounts_and_obey_global_budget() {
         );
     }
     peer.reconcile(&mut store).await;
-    assert_eq!(store.count("host.model.execute"), 4);
+    assert_eq!(store.count("host.model.execute_stream"), 4);
     peer.shutdown().await;
 }
 
@@ -985,7 +1038,7 @@ async fn missing_membership_does_not_execute_or_change_groups() {
     let writes = store.count("host.groups.change_members");
     store.fail_membership_read = true;
     assert!(peer.command(&mut store, "tick").await.is_err());
-    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.model.execute_stream"), 0);
     assert_eq!(store.count("host.groups.change_members"), writes);
     peer.shutdown().await;
 }
@@ -1106,7 +1159,7 @@ async fn six_invalid_answers_finish_unknown_without_fingerprint_or_admission() {
         probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
         "no_due_account"
     );
-    assert_eq!(store.count("host.model.execute"), 6);
+    assert_eq!(store.count("host.model.execute_stream"), 6);
     peer.shutdown().await;
 }
 
@@ -1196,7 +1249,7 @@ async fn visual_comparisons_target_accounts_keep_four_results_and_share_budget_w
     let sent = store
         .calls
         .iter()
-        .rfind(|(method, _)| method == "host.model.execute")
+        .rfind(|(method, _)| method == "host.model.execute_stream")
         .unwrap();
     assert_eq!(sent.1["model"], "gpt-5.6-sol");
     assert_eq!(sent.1["reasoning"]["effort"], "medium");
@@ -1206,7 +1259,7 @@ async fn visual_comparisons_target_accounts_keep_four_results_and_share_budget_w
             .unwrap()
             .contains("鹈鹕")
     );
-    let calls = store.count("host.model.execute");
+    let calls = store.count("host.model.execute_stream");
     let evidence = visual_request(
         &mut peer,
         &mut store,
@@ -1222,7 +1275,7 @@ async fn visual_comparisons_target_accounts_keep_four_results_and_share_budget_w
             .unwrap()
             .contains(">1</text>")
     );
-    assert_eq!(store.count("host.model.execute"), calls);
+    assert_eq!(store.count("host.model.execute_stream"), calls);
     let status = peer.command(&mut store, "status").await.unwrap();
     assert_eq!(status["visual_timeout_ms"], 110000);
     assert!(
@@ -1260,7 +1313,7 @@ async fn visual_comparisons_target_accounts_keep_four_results_and_share_budget_w
         .await
         .unwrap();
     assert_eq!(exhausted["status"], "daily_budget_exhausted");
-    assert_eq!(store.count("host.model.execute"), 7);
+    assert_eq!(store.count("host.model.execute_stream"), 7);
     assert_eq!(store.state[&second_key].value, original_second);
     peer.shutdown().await;
 }
@@ -1289,7 +1342,7 @@ async fn visual_leases_block_overlap_and_expiration_preserves_fingerprint_progre
         probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
         "no_due_account"
     );
-    assert_eq!(store.count("host.model.execute"), 1);
+    assert_eq!(store.count("host.model.execute_stream"), 1);
     store.state.get_mut(&key).unwrap().value["quality"]["lease_until_ms"] = json!(0);
     let resumed = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
     assert_eq!(resumed["batch"]["attempts"].as_array().unwrap().len(), 2);
@@ -1302,7 +1355,7 @@ async fn visual_leases_block_overlap_and_expiration_preserves_fingerprint_progre
             .unwrap()["status"],
         "account_busy"
     );
-    assert_eq!(store.count("host.model.execute"), 2);
+    assert_eq!(store.count("host.model.execute_stream"), 2);
     peer.shutdown().await;
 }
 
@@ -1348,5 +1401,77 @@ async fn visual_after_configuration_change_preserves_existing_fingerprint_record
     .await
     .unwrap();
     assert_eq!(evidence["visual_tests"][0]["model"], "gpt-5.6-sol");
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn timed_out_model_streams_close_and_keep_request_ids_for_both_probe_types() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore::default();
+    peer.reconcile(&mut store).await;
+    peer.call_timeout_ms = 6000; // Leaves one second to execute, including explicit cleanup.
+    store.stall_model_reads = true;
+    let visual = visual_request(
+        &mut peer,
+        &mut store,
+        "visual",
+        json!({"account_id":ACCOUNT,"model":"gpt-6-astra","reasoning_effort":"low"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(visual["visual_sample"]["error"], "visual_timeout");
+    assert_eq!(visual["visual_sample"]["request_id"], "req_mock");
+    assert!(visual["visual_sample"]["output"].is_null());
+    assert!(visual["visual_sample"]["duration_ms"].as_u64().unwrap() < 2000);
+    assert_eq!(store.count("host.model.stream_close"), 1);
+    assert!(store.model_events.is_empty());
+    let probe = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(probe["batch"]["attempts"][0]["error"], "probe_timeout");
+    assert_eq!(probe["batch"]["attempts"][0]["request_id"], "req_mock");
+    assert!(probe["batch"]["score"].is_null());
+    assert_eq!(probe["quality"]["lease_id"], "");
+    assert_eq!(store.count("host.model.stream_close"), 2);
+    assert_eq!(store.state["budget"].value["attempts"], 2);
+    assert!(store.model_events.is_empty());
+    // A subsequent request still uses the same host connection and succeeds normally.
+    store.stall_model_reads = false;
+    store.valid_model_output = true;
+    let probe = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(probe["batch"]["attempts"][1]["number_count"], 300);
+    assert_eq!(
+        store.count("host.model.stream_close"),
+        2,
+        "normal end already removes the handle"
+    );
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_model_stream_is_closed_before_evidence_is_saved() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore {
+        malformed_model_read: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let probe = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(
+        probe["batch"]["attempts"][0]["error"],
+        "invalid_event_batch"
+    );
+    assert_eq!(probe["batch"]["attempts"][0]["request_id"], "req_mock");
+    assert_eq!(store.count("host.model.stream_close"), 1);
+    let close = store
+        .calls
+        .iter()
+        .rposition(|(method, _)| method == "host.model.stream_close")
+        .unwrap();
+    let saved = store
+        .calls
+        .iter()
+        .rposition(|(method, _)| method == "host.state.put")
+        .unwrap();
+    assert!(close < saved);
+    assert!(store.model_events.is_empty());
     peer.shutdown().await;
 }

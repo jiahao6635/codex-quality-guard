@@ -9,7 +9,10 @@ use gateway_plugin_sdk::{
     PluginFault,
     call::{
         data::{AccountFacts, ClientKeyFactsQuery},
-        host::{ModelEventBatch, ModelExecuteRequest, ModelExecuteResult, ModelOperation},
+        host::{
+            ModelEventBatch, ModelExecuteRequest, ModelOperation, ModelStreamCloseRequest,
+            ModelStreamReadRequest, ModelStreamReadResult, ModelStreamResult,
+        },
         model::{CanonicalEvent, ContentKind, FinishReason, WirePayload},
         resources::{GroupEnsureRequest, GroupMembersChange, KeyEnsureRequest},
     },
@@ -565,15 +568,18 @@ pub async fn tick(
         }
         seed = seed.wrapping_add(1);
     };
-    let result = tokio::time::timeout(
+    let result = execute(
+        host,
+        c,
+        &r.probe_key_id,
+        &id,
+        &challenge,
         timeout.saturating_sub(started.elapsed()),
-        execute(host, c, &r.probe_key_id, &id, &challenge),
     )
     .await;
     let (request_id, output, mut error) = match result {
-        Ok(Ok((id, text))) => (Some(id), Some(text), None),
-        Ok(Err((id, reason))) => (id, None, Some(reason)),
-        Err(_) => (None, None, Some("probe_timeout".into())),
+        Ok((id, text)) => (Some(id), Some(text), None),
+        Err((id, reason)) => (id, None, Some(reason)),
     };
     let finished = host::now();
     if finished >= s.quality.lease_until_ms || finished < now {
@@ -751,18 +757,25 @@ pub async fn visual(
         }
     }
     let payload = json!({"model":input.model,"input":[{"role":"user","content":[{"type":"input_text","text":VISUAL_PROMPT}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":input.reasoning_effort}});
-    let result = tokio::time::timeout(
+    let result = execute_model(
+        host,
+        &r.probe_key_id,
+        id,
+        &input.model,
+        &payload,
         timeout.saturating_sub(started.elapsed()),
-        execute_model(host, &r.probe_key_id, id, &input.model, &payload),
     )
     .await;
     let (request_id, output, error) = match result {
-        Ok(Ok((request_id, events))) => match visual_output(events) {
+        Ok((request_id, events)) => match visual_output(events) {
             Ok(output) => (Some(request_id), Some(output), None),
             Err(error) => (Some(request_id), None, Some(error)),
         },
-        Ok(Err((request_id, error))) => (request_id, None, Some(error)),
-        Err(_) => (None, None, Some("visual_timeout".into())),
+        Err((request_id, error)) => (
+            request_id,
+            None,
+            Some(error.replace("model_timeout", "visual_timeout")),
+        ),
     };
     let finished = host::now();
     let mut sample = VisualEvidence {
@@ -862,9 +875,12 @@ async fn execute(
     key: &str,
     account: &str,
     challenge: &scorer::Challenge,
+    timeout: Duration,
 ) -> Result<(String, String), (Option<String>, String)> {
     let payload = json!({"model":c.model,"input":[{"role":"user","content":[{"type":"input_text","text":challenge.prompt}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":"low"}});
-    let (request_id, batch) = execute_model(host, key, account, &c.model, &payload).await?;
+    let (request_id, batch) = execute_model(host, key, account, &c.model, &payload, timeout)
+        .await
+        .map_err(|(id, error)| (id, error.replace("model_timeout", "probe_timeout")))?;
     valid_output(batch)
         .map(|output| (request_id.clone(), output))
         .map_err(|error| (Some(request_id), error))
@@ -876,8 +892,12 @@ async fn execute_model(
     account: &str,
     model: &str,
     payload: &Value,
+    timeout: Duration,
 ) -> Result<(String, ModelEventBatch), (Option<String>, String)> {
-    let failure = |reason: &str| (None, reason.to_string());
+    let started = Instant::now();
+    // Cleanup stays inside the caller's total deadline, before the host cancels its parent.
+    let work_timeout = timeout.saturating_sub(Duration::from_secs(2).min(timeout / 4));
+    let failure = |reason: &str| (None, reason.to_owned());
     let meta = ModelExecuteRequest {
         client_key_id: Some(key.into()),
         model: model.into(),
@@ -887,26 +907,100 @@ async fn execute_model(
         account_id: Some(account.into()),
         previous_response_id: None,
     };
-    let reply = host
-        .call(
-            "host.model.execute",
+    let reply = tokio::time::timeout(
+        work_timeout,
+        host.call(
+            "host.model.execute_stream",
             serde_json::to_value(meta).map_err(|_| failure("request_encode"))?,
-            serde_json::to_vec(&payload).map_err(|_| failure("request_encode"))?,
-        )
-        .await
-        .map_err(|_| failure("upstream_or_host_execution_failed"))?;
-    let result: ModelExecuteResult =
+            serde_json::to_vec(payload).map_err(|_| failure("request_encode"))?,
+        ),
+    )
+    .await
+    .map_err(|_| failure("model_timeout"))?
+    .map_err(|_| failure("upstream_or_host_execution_failed"))?;
+    let stream: ModelStreamResult =
         serde_json::from_value(reply.result).map_err(|_| failure("invalid_model_metadata"))?;
-    let output = (|| -> Result<ModelEventBatch, String> {
-        let batch = ModelEventBatch::decode(&reply.payload).map_err(|_| "invalid_event_batch")?;
-        if result.events as usize != batch.events.len() {
-            return Err("event_count_mismatch".into());
+    let request_id = Some(stream.request_id.clone());
+    let mut read = Box::pin(async {
+        if !reply.payload.is_empty() {
+            return Err("unexpected_model_start_payload");
         }
-        Ok(batch)
-    })();
-    match output {
-        Ok(text) => Ok((result.request_id, text)),
-        Err(reason) => Err((Some(result.request_id), reason)),
+        let mut all = ModelEventBatch { events: vec![] };
+        let mut bytes = 0usize;
+        loop {
+            let reply = host
+                .call(
+                    "host.model.stream_read",
+                    serde_json::to_value(ModelStreamReadRequest {
+                        stream: stream.stream.clone(),
+                        maximum_bytes: 1024 * 1024,
+                    })
+                    .map_err(|_| "request_encode")?,
+                    vec![],
+                )
+                .await
+                .map_err(|_| "upstream_or_host_execution_failed")?;
+            let read: ModelStreamReadResult =
+                serde_json::from_value(reply.result).map_err(|_| "invalid_model_metadata")?;
+            if read.end {
+                // Core has finalized and removed the handle; closing it again would be denied.
+                if read.events != 0 || !reply.payload.is_empty() {
+                    return Err("invalid_model_stream_end");
+                }
+                return Ok(all);
+            }
+            bytes = bytes.saturating_add(reply.payload.len());
+            if bytes > 1024 * 1024 {
+                return Err("model_event_buffer_too_large");
+            }
+            let batch =
+                ModelEventBatch::decode(&reply.payload).map_err(|_| "invalid_event_batch")?;
+            if read.events as usize != batch.events.len() {
+                return Err("event_count_mismatch");
+            }
+            all.events.extend(batch.events);
+        }
+    });
+    // Retain the pending read so close can wake it and its host finalizer can finish.
+    let result =
+        tokio::time::timeout(work_timeout.saturating_sub(started.elapsed()), &mut read).await;
+    let timed_out = result.is_err();
+    let result = result.unwrap_or(Err("model_timeout"));
+    if !matches!(result, Ok(_) | Err("invalid_model_stream_end")) {
+        let close = host.call(
+            "host.model.stream_close",
+            serde_json::to_value(ModelStreamCloseRequest {
+                stream: stream.stream.clone(),
+            })
+            .map_err(|_| (request_id.clone(), "request_encode".into()))?,
+            vec![],
+        );
+        if !matches!(tokio::time::timeout(timeout.saturating_sub(started.elapsed()), close).await, Ok(Ok(reply)) if reply.result == json!({}) && reply.payload.is_empty())
+        {
+            return Err((
+                request_id,
+                format!(
+                    "{}; model_stream_close_failed",
+                    result.err().unwrap_or("model_stream_failed")
+                ),
+            ));
+        }
+        // The close ACK is immediate. A read already holding the session finalizes before
+        // replying; do not end the parent and abort that cleanup while it is still pending.
+        if timed_out
+            && tokio::time::timeout(timeout.saturating_sub(started.elapsed()), &mut read)
+                .await
+                .is_err()
+        {
+            return Err((
+                request_id,
+                "model_timeout; model_stream_cleanup_pending".into(),
+            ));
+        }
+    }
+    match result {
+        Ok(batch) => Ok((stream.request_id, batch)),
+        Err(error) => Err((request_id, error.into())),
     }
 }
 
