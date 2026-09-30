@@ -6,7 +6,7 @@ Where MIT is offered as an alternative, this distribution selects MIT.
 Additional Unicode data terms are retained where required.
 
 ==============================================================================
-codex-quality-guard 0.1.1
+codex-quality-guard 0.2.0
 Source: This repository
 Declared license: MIT
 Included license: MIT
@@ -307,7 +307,7 @@ DEALINGS IN THE SOFTWARE.
 
 ==============================================================================
 gateway-plugin-sdk 0.1.0
-Source: git+https://github.com/zyycn/codex-proxy-rs.git?rev=e06ca56f935774505aed0bd0ec3a2bc475e5e502#e06ca56f935774505aed0bd0ec3a2bc475e5e502
+Source: git+https://github.com/zyycn/codex-proxy-rs.git?rev=718b959fc137ad7f0d1965abe1f960a978971921#718b959fc137ad7f0d1965abe1f960a978971921
 Declared license: Apache-2.0
 Included license: Apache-2.0
 

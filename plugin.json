@@ -1,14 +1,14 @@
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
   "name": "quality-guard",
   "displayName": "模型质量守护",
   "publisher": "jiahao6635",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "按账号进行 ModelTrace 行为指纹探测，连续异常后移出健康组，复测通过后恢复。",
   "license": "MIT",
   "author": "jiahao6635",
   "engines": {
-    "codex-proxy-rs": ">=3.17.0, <4.0.0"
+    "codex-proxy-rs": ">=3.18.0, <3.19.0"
   },
   "main": "bin/plugin",
   "runtime": "trustedProcess",
@@ -17,13 +17,6 @@
     "command_line": {},
     "maintenance": {}
   },
-  "permissions": [
-    "models",
-    "data",
-    "groups",
-    "keys",
-    "key_budgets"
-  ],
   "configurationSchema": {
     "type": "object",
     "properties": {
@@ -149,6 +142,11 @@
         },
         "additionalProperties": false,
         "default": {}
+      },
+      "auto_probe": {
+        "type": "boolean",
+        "default": false,
+        "description": "启用宿主周期维护探针；每次最多探测一个到期账号"
       }
     },
     "additionalProperties": false

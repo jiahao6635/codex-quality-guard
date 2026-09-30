@@ -1,4 +1,6 @@
-# 定时执行模板
+# 可选的外部定时执行模板
+
+CPR 3.18 + 插件 v0.2.0 优先使用配置 `auto_probe: true`，由宿主维护周期触发，无需 SSH 定时任务。只有自动模式20秒期限不足时再使用此模板；使用前设 `auto_probe: false`，避免重复调度。
 
 这里交付 systemd 模板，不会自动安装或启用服务。安装插件后，将 `quality-guard.env.example` 复制为 `/etc/codex-quality-guard.env`，填写实际二进制路径、网关工作目录和插件实例 UUID。实例 UUID 与 `jiahao6635.quality-guard` 插件 ID 是不同标识。
 

@@ -11,8 +11,7 @@ use codex_quality_guard::{
     state::{Phase, Record, Verdict},
 };
 use gateway_plugin_sdk::{
-    CallContext, ErrorCode, Frame, Handshake, Message, PROTOCOL_VERSION, Permission, PluginFault,
-    Stage,
+    CallContext, ErrorCode, Frame, Handshake, Message, PROTOCOL_VERSION, PluginFault, Stage,
     call::{
         host::{ModelEventBatch, StateRecord},
         model::{CanonicalEvent, ExecutionEvent, FinishReason},
@@ -30,6 +29,7 @@ struct FakeStore {
     state: BTreeMap<String, StateRecord>,
     groups: BTreeMap<String, BTreeSet<String>>,
     calls: Vec<(String, Value)>,
+    model_accounts: Vec<String>,
     reject_account_writes: bool,
     bypass_probe_key_scope: bool,
     fail_membership_change: bool,
@@ -37,6 +37,9 @@ struct FakeStore {
     take_over_during_model: bool,
     probe_budget_too_wide: bool,
     extra_account: bool,
+    http_body: Option<Vec<u8>>,
+    deny_budget: bool,
+    fail_membership_read: bool,
 }
 
 impl FakeStore {
@@ -137,16 +140,61 @@ impl FakeStore {
                 }
                 json!({"added": added, "removed": removed})
             }
+            "host.http.dispatch" => {
+                assert_eq!(params["method"], "GET");
+                let page = match params["uri"].as_str().unwrap() {
+                    "/api/admin/accounts?page=1&pageSize=100" => 1,
+                    "/api/admin/accounts?page=2&pageSize=100" if self.extra_account => 2,
+                    other => panic!("unexpected URI: {other}"),
+                };
+                assert!(params["headers"].as_array().unwrap().is_empty());
+                let ids = if page == 1 {
+                    vec![ACCOUNT]
+                } else {
+                    vec!["acct_probe_2"]
+                };
+                let items: Vec<_> = ids
+                    .into_iter()
+                    .map(|id| {
+                        let groups: Vec<_> = self
+                            .groups
+                            .iter()
+                            .filter(|(_, members)| members.contains(id))
+                            .map(|(key, _)| json!({"id":format!("grp_{key}")}))
+                            .collect();
+                        json!({"id":id,"groups":groups})
+                    })
+                    .collect();
+                self.http_body = Some(
+                    serde_json::to_vec(
+                        &json!({"code":0,"data":{"items":items,"page":{"page":page,"totalPages":if self.extra_account {2} else {1}}}}),
+                    )
+                    .unwrap(),
+                );
+                return Ok((
+                    json!({"status":if self.fail_membership_read {503} else {200},"version":"HTTP/1.1","headers":[],"body":{"kind":"handle","handle":"accounts-body"},"response":null,"session":false}),
+                    vec![],
+                ));
+            }
+            "host.http.body_read" => {
+                let bytes = self.http_body.take();
+                return Ok((
+                    json!({"eof":bytes.is_none(),"trailers":null}),
+                    bytes.unwrap_or_default(),
+                ));
+            }
+            "host.http.body_close" => {
+                self.http_body = None;
+                return Ok((json!({}), vec![]));
+            }
             "host.data.accounts.list" => {
                 let mut ids = vec![ACCOUNT];
                 if self.extra_account {
                     ids.push("acct_probe_2");
                 }
                 let accounts: Vec<_> = ids.into_iter().map(|id| {
-                    let groups: Vec<_> = self.groups.iter()
-                        .filter(|(_, members)| members.contains(id))
-                        .map(|(key, _)| format!("grp_{key}")).collect();
-                    json!({"account_id": id, "provider_id": "openai", "group_ids": groups, "enabled": true, "updated_at_ms": 0})
+                    // 重现 3.18 的空分组缺陷，真实成员只能从公开账号列表取得。
+                    json!({"account_id": id, "name": id, "email": null, "provider_id": "openai", "group_ids": [], "enabled": true, "updated_at_ms": 0})
                 }).collect();
                 json!({"schema_version": 1, "accounts": accounts, "next_cursor": null})
             }
@@ -165,6 +213,9 @@ impl FakeStore {
                 json!({"schema_version": 1, "client_key_id": data["client_key_id"], "enabled": true, "group_ids": groups})
             }
             "host.keys.get_budget" => {
+                if self.deny_budget {
+                    return Err(PluginFault::new(ErrorCode::Rejected, "budget unavailable"));
+                }
                 let daily = if self.probe_budget_too_wide {
                     "10"
                 } else {
@@ -173,9 +224,13 @@ impl FakeStore {
                 json!({"client_key_id": data["client_key_id"], "daily_limit_usd": daily, "weekly_limit_usd": "25", "daily_used_usd": "0", "weekly_used_usd": "0", "daily_resets_at_ms": null, "weekly_resets_at_ms": null})
             }
             "host.model.execute" => {
+                self.model_accounts
+                    .push(params["account_id"].as_str().unwrap().to_owned());
                 // 响应有终态但内容不属于题库；只验证请求归属和未知样本处理。
                 assert_eq!(params["client_key_id"], "key_probe");
-                assert_eq!(params["account_id"], ACCOUNT);
+                assert!(
+                    [ACCOUNT, "acct_probe_2"].contains(&params["account_id"].as_str().unwrap())
+                );
                 assert_eq!(params["provider"], "openai");
                 assert_eq!(params["model"], "gpt-6-astra");
                 assert_eq!(data["model"], "gpt-6-astra");
@@ -238,7 +293,6 @@ struct Peer {
     input: ChildStdin,
     output: ChildStdout,
     next_id: u64,
-    permissions: BTreeSet<Permission>,
 }
 
 impl Peer {
@@ -253,7 +307,6 @@ impl Peer {
         let mut input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
         let manifest = manifest().unwrap();
-        let permissions = manifest.permissions;
         write_frame(
             &mut input,
             &Frame::control(Message::Hello {
@@ -265,7 +318,6 @@ impl Peer {
                     generation: 1,
                     incarnation: "test-incarnation".into(),
                     configuration: serde_json::to_value(config).unwrap(),
-                    permissions: permissions.iter().copied().collect(),
                     contributes: manifest.contributes,
                 },
             }),
@@ -277,7 +329,6 @@ impl Peer {
             input,
             output,
             next_id: 1,
-            permissions,
         };
         assert!(matches!(
             peer.receive().await.message,
@@ -319,7 +370,8 @@ impl Peer {
                         generation: 1,
                         incarnation: "test-incarnation".into(),
                         stage,
-                        timeout_ms: 5000,
+                        timeout_ms: 120000,
+                        resource_stream: false,
                         resource_scope_id: format!("scope-{id}"),
                         request_id: Some(format!("parent-{id}")),
                         attempt_id: None,
@@ -342,20 +394,7 @@ impl Peer {
                     params,
                 } => {
                     assert_eq!(parent_id, id);
-                    // 与宿主一致：预算读取需要独立访问域，keys 权限不能替代。
-                    let result = if method == "host.keys.get_budget"
-                        && (!self.permissions.contains(&Permission::KeyBudgets)
-                            || !matches!(
-                                stage,
-                                Stage::Management | Stage::CommandLine | Stage::Maintenance
-                            )) {
-                        Err(PluginFault::new(
-                            ErrorCode::PermissionDenied,
-                            "host callback permission denied",
-                        ))
-                    } else {
-                        store.callback(&method, params, &frame.payload)
-                    };
+                    let result = store.callback(&method, params, &frame.payload);
                     let reply = match result {
                         Ok((result, payload)) => Frame {
                             message: Message::Result {
@@ -454,7 +493,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
     assert_eq!(
         registration["routes"],
         json!([{"method": "GET", "path": "status", "request_content_types": [],
-            "response_content_types": ["application/json"]}])
+            "response_content_types": ["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
     );
     assert!(
         store.calls.is_empty(),
@@ -474,7 +513,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
         Message::Result { result, .. } => {
             assert_eq!(
                 result,
-                json!({"status": 200, "content_type": "application/json"})
+                json!({"status": 200, "content_type": "application/json", "headers": []})
             );
         }
         _ => panic!("expected management response"),
@@ -505,18 +544,18 @@ async fn disabled_status_round_trips_without_model_or_group_writes() {
 }
 
 #[tokio::test]
-async fn budget_status_requires_the_permission_declared_by_the_manifest() {
+async fn budget_failure_stops_probe() {
     let mut peer = Peer::start(&config()).await;
     let mut store = FakeStore::default();
     peer.reconcile(&mut store).await;
     let status = peer.command(&mut store, "status").await.unwrap();
     assert_eq!(status["probe_budget_ok"], true);
 
-    assert!(peer.permissions.remove(&Permission::KeyBudgets));
+    store.deny_budget = true;
     let status = peer.command(&mut store, "status").await.unwrap();
     assert_eq!(status["probe_budget_ok"], false);
     let error = peer.command(&mut store, "tick").await.unwrap_err();
-    assert_eq!(error.code, ErrorCode::PermissionDenied);
+    assert_eq!(error.code, ErrorCode::Rejected);
     assert_eq!(store.count("host.model.execute"), 0);
     peer.shutdown().await;
 }
@@ -808,5 +847,101 @@ async fn pool_guard_stops_expansion_without_restoring_existing_isolation() {
     assert_eq!(store.state["maintenance"].value["ok"], false);
     assert!(!store.groups["healthy"].contains(ACCOUNT));
     assert!(store.groups["healthy"].contains("acct_probe_2"));
+    peer.shutdown().await;
+}
+
+async fn probe_account(
+    peer: &mut Peer,
+    store: &mut FakeStore,
+    id: &str,
+) -> Result<Value, PluginFault> {
+    let response = peer
+        .invoke(
+            store,
+            "management.handle",
+            Stage::Management,
+            json!({"method":"POST","path":"probe","query":"","content_type":"application/json"}),
+            serde_json::to_vec(&json!({"account_id":id})).unwrap(),
+        )
+        .await?;
+    Ok(serde_json::from_slice(&response.payload).unwrap())
+}
+
+#[tokio::test]
+async fn explicit_accounts_are_isolated_and_do_not_bypass_due_time() {
+    let mut c = config();
+    c.account_ids.push("acct_probe_2".into());
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        extra_account: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    assert_eq!(store.state["maintenance"].value["ok"], true);
+    // 基础事实故意返回空组；两次请求仍须指定不同账号，并各自持久化证据。
+    let first = probe_account(&mut peer, &mut store, "acct_probe_2")
+        .await
+        .unwrap();
+    assert_eq!(first["account_id"], "acct_probe_2");
+    let response = peer.invoke(&mut store, "command_line.execute", Stage::CommandLine, json!({}),
+        serde_json::to_vec(&json!({"name":"tick","arguments":{"account_id":{"type":"string","value":ACCOUNT}}})).unwrap()).await.unwrap();
+    let command: Value = serde_json::from_slice(&response.payload).unwrap();
+    let second: Value = serde_json::from_str(command["stdout"].as_str().unwrap()).unwrap();
+    assert_eq!(second["account_id"], ACCOUNT);
+    assert_eq!(store.count("host.model.execute"), 2);
+    assert_eq!(store.model_accounts, vec!["acct_probe_2", ACCOUNT]);
+    assert_eq!(
+        probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
+        "no_due_account"
+    );
+    assert!(
+        probe_account(&mut peer, &mut store, "acct_unmanaged")
+            .await
+            .is_err()
+    );
+    assert_eq!(store.count("host.model.execute"), 2);
+    for id in [ACCOUNT, "acct_probe_2"] {
+        let key = format!("account.{:x}", Sha256::digest(id.as_bytes()));
+        assert_eq!(store.state[&key].value["quality"]["sample_counter"], 1);
+        assert_eq!(store.state[&key].value["quality"]["lease_id"], "");
+    }
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn automatic_probes_rotate_accounts_and_obey_global_budget() {
+    let mut c = config();
+    c.auto_probe = true;
+    c.max_daily_attempts = 2;
+    c.account_ids.push("acct_probe_2".into());
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        extra_account: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    peer.reconcile(&mut store).await;
+    assert_eq!(store.count("host.model.execute"), 2);
+    assert_eq!(store.state["budget"].value["attempts"], 2);
+    for id in [ACCOUNT, "acct_probe_2"] {
+        let key = format!("account.{:x}", Sha256::digest(id.as_bytes()));
+        assert_eq!(store.state[&key].value["quality"]["sample_counter"], 1);
+    }
+    store.seed_record(&Record::new(c.tag(), 0));
+    peer.reconcile(&mut store).await;
+    assert_eq!(store.count("host.model.execute"), 2);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn missing_membership_does_not_execute_or_change_groups() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore::default();
+    peer.reconcile(&mut store).await;
+    let writes = store.count("host.groups.change_members");
+    store.fail_membership_read = true;
+    assert!(peer.command(&mut store, "tick").await.is_err());
+    assert_eq!(store.count("host.model.execute"), 0);
+    assert_eq!(store.count("host.groups.change_members"), writes);
     peer.shutdown().await;
 }

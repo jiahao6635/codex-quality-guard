@@ -102,11 +102,18 @@ pub async fn accounts(host: &HostClient) -> Result<Vec<AccountFacts>, PluginFaul
             return Err(fault("too_many_accounts"));
         }
         match page.next_cursor {
-            None => return Ok(all),
+            None => break,
             Some(c) if seen.insert(c.clone()) => cursor = Some(c),
             _ => return Err(fault("account_pagination_invalid")),
         }
     }
+    let mut groups = account_groups(host).await?;
+    for account in &mut all {
+        account.group_ids = groups
+            .remove(&account.account_id)
+            .ok_or_else(|| fault("account_membership_changed_retry"))?;
+    }
+    Ok(all)
 }
 
 pub async fn delete(host: &HostClient, key: &str, version: u64) -> Result<(), PluginFault> {
@@ -126,4 +133,87 @@ pub async fn delete(host: &HostClient, key: &str, version: u64) -> Result<(), Pl
     let _: gateway_plugin_sdk::call::host::StateDeleteResult =
         serde_json::from_value(reply.result).map_err(|_| fault("state_reply_invalid"))?;
     Ok(())
+}
+
+// CPR 3.18 的基础事实未填充分组；复用公开账号列表，拒绝把缺失数据当作空成员。
+async fn account_groups(
+    host: &HostClient,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, PluginFault> {
+    use gateway_plugin_sdk::{
+        call::middleware::http::Version,
+        client::{HttpBody, HttpFrame, HttpRequest},
+    };
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        code: u32,
+        data: Page,
+    }
+    #[derive(serde::Deserialize)]
+    struct Page {
+        items: Vec<Account>,
+        page: Paging,
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Paging {
+        page: u32,
+        total_pages: u32,
+    }
+    #[derive(serde::Deserialize)]
+    struct Account {
+        id: String,
+        groups: Vec<Group>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Group {
+        id: String,
+    }
+    let mut groups = std::collections::BTreeMap::new();
+    for page in 1..=1000 {
+        let mut response = host
+            .dispatch_http(HttpRequest {
+                settings: serde_json::Value::Null,
+                method: "GET".into(),
+                uri: format!("/api/admin/accounts?page={page}&pageSize=100"),
+                version: Version::Http11,
+                headers: vec![],
+                timeout_ms: Some(5000),
+                body: HttpBody::empty(),
+            })
+            .await?;
+        if response.status != 200 {
+            let _ = response.body.close().await;
+            return Err(fault("account_membership_read_failed"));
+        }
+        let mut bytes = Vec::new();
+        while let Some(frame) = response.body.read().await? {
+            if let HttpFrame::Data(data) = frame {
+                if bytes.len().saturating_add(data.len()) > 4 * 1024 * 1024 {
+                    let _ = response.body.close().await;
+                    return Err(fault("account_membership_response_too_large"));
+                }
+                bytes.extend(data);
+            }
+        }
+        let result: Envelope =
+            serde_json::from_slice(&bytes).map_err(|_| fault("account_membership_invalid"))?;
+        if result.code != 0 || result.data.page.page != page {
+            return Err(fault("account_membership_invalid"));
+        }
+        for account in result.data.items {
+            if groups
+                .insert(
+                    account.id,
+                    account.groups.into_iter().map(|g| g.id).collect(),
+                )
+                .is_some()
+            {
+                return Err(fault("account_membership_changed_retry"));
+            }
+        }
+        if page >= result.data.page.total_pages {
+            return Ok(groups);
+        }
+    }
+    Err(fault("account_membership_page_limit"))
 }

@@ -9,6 +9,7 @@ pub(crate) const PROVIDER: &str = "openai";
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub enabled: bool,
+    pub auto_probe: bool,
     pub account_ids: Vec<String>,
     pub model: String,
     pub business_key_ids: Vec<String>,
@@ -25,6 +26,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
+            auto_probe: false,
             account_ids: Vec::new(),
             model: "gpt-6-astra".into(),
             business_key_ids: Vec::new(),

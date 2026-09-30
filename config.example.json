@@ -20,5 +20,6 @@
     "unknown_retry_ms": 300000,
     "cooldown_initial_ms": 3600000,
     "cooldown_max_ms": 21600000
-  }
+  },
+  "auto_probe": false
 }

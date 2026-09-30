@@ -18,7 +18,10 @@ use gateway_plugin_sdk::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, time::Duration};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Resources {
@@ -366,7 +369,16 @@ async fn reserve_budget(host: &HostClient, c: &Config) -> Result<bool, PluginFau
     host::put(host, "budget", &b, version).await?;
     Ok(true)
 }
-pub async fn tick(host: &HostClient, c: &Config) -> Result<Value, PluginFault> {
+pub async fn tick(
+    host: &HostClient,
+    c: &Config,
+    account: Option<&str>,
+    timeout: Duration,
+) -> Result<Value, PluginFault> {
+    let started = Instant::now();
+    if account.is_some_and(|id| !c.account_ids.iter().any(|managed| managed == id)) {
+        return Err(fault("account_not_managed"));
+    }
     if !c.enabled {
         return Ok(json!({"status":"disabled"}));
     }
@@ -374,11 +386,11 @@ pub async fn tick(host: &HostClient, c: &Config) -> Result<Value, PluginFault> {
     check_keys(host, &r, c).await?;
     check_probe_budget(host, &r, c).await?;
     let mut due = Vec::new();
-    for a in host::accounts(host)
-        .await?
-        .into_iter()
-        .filter(|a| managed(a, c) && a.group_ids.contains(&r.probe_group_id))
-    {
+    for a in host::accounts(host).await?.into_iter().filter(|a| {
+        managed(a, c)
+            && a.group_ids.contains(&r.probe_group_id)
+            && account.is_none_or(|id| id == a.account_id)
+    }) {
         let (s, v) = load(host, &a.account_id, c).await?;
         let now = host::now();
         if s.quality.next_probe_at_ms <= now
@@ -435,7 +447,7 @@ pub async fn tick(host: &HostClient, c: &Config) -> Result<Value, PluginFault> {
     let seed = u64::from_be_bytes(hash[..8].try_into().map_err(|_| fault("seed_failed"))?);
     let challenge = scorer::challenge(seed);
     let result = tokio::time::timeout(
-        Duration::from_secs(90),
+        timeout.saturating_sub(started.elapsed()),
         execute(host, c, &r.probe_key_id, &id, &challenge),
     )
     .await;
@@ -623,7 +635,7 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
     for id in &c.account_ids {
         let (s, _) = load(host, id, c).await?;
         let account = accounts.iter().find(|a| a.account_id == *id);
-        records.push(json!({"account_id":id,"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
+        records.push(json!({"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
     }
     let scope_ok = if let Some(r) = &r {
         check_keys(host, r, c).await.is_ok()
@@ -636,7 +648,7 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
         false
     };
     Ok(
-        json!({"enabled":c.enabled,"model":c.model,"scorer_version":scorer::VERSION,"classifier_scores_are_not_model_identity_proof":true,"key_scopes_ok":scope_ok,"probe_budget_ok":budget_ok,"resources":r,"budget":host::get::<Budget>(host,"budget").await?.map(|v|v.0),"maintenance":host::get::<Value>(host,"maintenance").await?.map(|v|v.0),"accounts":records}),
+        json!({"enabled":c.enabled,"auto_probe":c.auto_probe,"model":c.model,"scorer_version":scorer::VERSION,"classifier_scores_are_not_model_identity_proof":true,"key_scopes_ok":scope_ok,"probe_budget_ok":budget_ok,"resources":r,"budget":host::get::<Budget>(host,"budget").await?.map(|v|v.0),"maintenance":host::get::<Value>(host,"maintenance").await?.map(|v|v.0),"accounts":records}),
     )
 }
 
