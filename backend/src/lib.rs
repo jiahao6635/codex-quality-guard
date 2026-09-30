@@ -62,8 +62,17 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                         response_content_types: vec!["application/json".into()],
                     },
                 ],
-                resources: vec![],
-                pages: vec![],
+                resources: vec![ManagementResource {
+                    path: "web/index.html".into(),
+                    public: false,
+                }],
+                pages: vec![ManagementPage {
+                    id: "quality-probes".into(),
+                    title: "账号质量探针".into(),
+                    description: Some("查看各账号探针结果、冷却状态，并手动检测一次".into()),
+                    entry: "web/index.html".into(),
+                    icon: None,
+                }],
                 callbacks: vec![],
             },
             move |call| {

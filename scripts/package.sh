@@ -36,4 +36,5 @@ python3 "$plugin_root/scripts/collect-licenses.py"
   --binary "$plugin_root/backend/target/$plugin_target/release/codex-quality-guard" \
   --target "$plugin_target" \
   --resource-map legal=legal \
+  --resource-map web=web \
   --output-dir "$plugin_root/dist"

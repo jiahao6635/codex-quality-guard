@@ -489,6 +489,17 @@ async fn management_registers_relative_status_route_and_serves_it() {
         .await
         .unwrap();
     let registration: Value = serde_json::from_slice(&registration.payload).unwrap();
+    assert_eq!(registration["pages"][0]["entry"], "web/index.html");
+    assert_eq!(
+        registration["resources"],
+        json!([{"path":"web/index.html","public":false}])
+    );
+    assert!(
+        codex_quality_guard::manifest()
+            .unwrap()
+            .resources
+            .contains_key("web/index.html")
+    );
     // 宿主要求相对路径；首斜杠会在安装时被拒绝。
     assert_eq!(
         registration["routes"],

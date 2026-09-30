@@ -648,7 +648,7 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
         false
     };
     Ok(
-        json!({"enabled":c.enabled,"auto_probe":c.auto_probe,"model":c.model,"scorer_version":scorer::VERSION,"classifier_scores_are_not_model_identity_proof":true,"key_scopes_ok":scope_ok,"probe_budget_ok":budget_ok,"resources":r,"budget":host::get::<Budget>(host,"budget").await?.map(|v|v.0),"maintenance":host::get::<Value>(host,"maintenance").await?.map(|v|v.0),"accounts":records}),
+        json!({"enabled":c.enabled,"auto_probe":c.auto_probe,"probe_limits":{"max_daily_attempts":c.max_daily_attempts,"max_daily_output_tokens":c.max_daily_output_tokens,"max_output_tokens":c.max_output_tokens},"model":c.model,"scorer_version":scorer::VERSION,"classifier_scores_are_not_model_identity_proof":true,"key_scopes_ok":scope_ok,"probe_budget_ok":budget_ok,"resources":r,"budget":host::get::<Budget>(host,"budget").await?.map(|v|v.0),"maintenance":host::get::<Value>(host,"maintenance").await?.map(|v|v.0),"accounts":records}),
     )
 }
 
