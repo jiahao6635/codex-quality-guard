@@ -167,7 +167,7 @@ impl FakeStore {
                     .collect();
                 self.http_body = Some(
                     serde_json::to_vec(
-                        &json!({"code":0,"data":{"items":items,"page":{"page":page,"totalPages":if self.extra_account {2} else {1}}}}),
+                        &json!({"code":200,"data":{"items":items,"page":{"page":page,"totalPages":if self.extra_account {2} else {1}}}}),
                     )
                     .unwrap(),
                 );

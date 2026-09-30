@@ -3,7 +3,7 @@
   "name": "quality-guard",
   "displayName": "模型质量守护",
   "publisher": "jiahao6635",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "按账号进行 ModelTrace 行为指纹探测，连续异常后移出健康组，复测通过后恢复。",
   "license": "MIT",
   "author": "jiahao6635",

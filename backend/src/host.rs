@@ -197,7 +197,7 @@ async fn account_groups(
         }
         let result: Envelope =
             serde_json::from_slice(&bytes).map_err(|_| fault("account_membership_invalid"))?;
-        if result.code != 0 || result.data.page.page != page {
+        if result.code != 200 || result.data.page.page != page {
             return Err(fault("account_membership_invalid"));
         }
         for account in result.data.items {
