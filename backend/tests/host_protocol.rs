@@ -50,6 +50,10 @@ struct FakeStore {
     http_body: Option<Vec<u8>>,
     deny_budget: bool,
     fail_membership_read: bool,
+    plugin_instances: Option<Value>,
+    settings_updates: Vec<Value>,
+    reject_settings_update: bool,
+    disabled_extra_account: bool,
 }
 
 impl FakeStore {
@@ -164,6 +168,51 @@ impl FakeStore {
                 json!({"added": added, "removed": removed})
             }
             "host.http.dispatch" => {
+                let uri = params["uri"].as_str().unwrap();
+                if [
+                    "/api/admin/plugins/instances",
+                    "/api/admin/plugins/instances/update",
+                ]
+                .contains(&uri)
+                {
+                    let (body, status) = if uri.ends_with("/update") {
+                        assert_eq!(params["method"], "POST");
+                        assert_eq!(params["headers"][0]["name"], "content-type");
+                        self.settings_updates.push(data.clone());
+                        if self.reject_settings_update {
+                            (json!({"code":40901,"data":null}), 409)
+                        } else {
+                            let own = self
+                                .plugin_instances
+                                .as_mut()
+                                .unwrap()
+                                .as_array_mut()
+                                .unwrap()
+                                .iter_mut()
+                                .find(|instance| instance["id"] == data["id"])
+                                .unwrap();
+                            assert_eq!(own["revision"], data["instance"]["expectedRevision"]);
+                            own["configuration"] = data["instance"]["configuration"].clone();
+                            own["revision"] = json!(own["revision"].as_u64().unwrap() + 1);
+                            (
+                                json!({"code":200,"data":{"id":data["id"],"configRevision":own["revision"]}}),
+                                200,
+                            )
+                        }
+                    } else {
+                        assert_eq!(params["method"], "GET");
+                        assert!(params["headers"].as_array().unwrap().is_empty());
+                        (
+                            json!({"code":200,"data":self.plugin_instances.as_ref().unwrap()}),
+                            200,
+                        )
+                    };
+                    self.http_body = Some(serde_json::to_vec(&body).unwrap());
+                    return Ok((
+                        json!({"status":status,"version":"HTTP/1.1","headers":[],"body":{"kind":"handle","handle":"settings-body"},"response":null,"session":false}),
+                        vec![],
+                    ));
+                }
                 assert_eq!(params["method"], "GET");
                 let page = match params["uri"].as_str().unwrap() {
                     "/api/admin/accounts?page=1&pageSize=100" => 1,
@@ -217,7 +266,7 @@ impl FakeStore {
                 }
                 let accounts: Vec<_> = ids.into_iter().map(|id| {
                     // 重现 3.18 的空分组缺陷，真实成员只能从公开账号列表取得。
-                    json!({"account_id": id, "name": id, "email": null, "provider_id": "openai", "group_ids": [], "enabled": true, "updated_at_ms": 0})
+                    json!({"account_id": id, "name": id, "email": null, "provider_id": "openai", "group_ids": [], "enabled": !(id == "acct_probe_2" && self.disabled_extra_account), "updated_at_ms": 0})
                 }).collect();
                 json!({"schema_version": 1, "accounts": accounts, "next_cursor": null})
             }
@@ -602,6 +651,8 @@ async fn management_registers_relative_status_route_and_serves_it() {
         .unwrap();
     let registration: Value = serde_json::from_slice(&registration.payload).unwrap();
     assert_eq!(registration["pages"][0]["entry"], "web/index.html");
+    assert_eq!(registration["pages"][1]["id"], "probe-settings");
+    assert_eq!(registration["pages"][1]["entry"], "web/index.html");
     assert_eq!(
         registration["resources"],
         json!([{"path":"web/index.html","public":false}])
@@ -615,7 +666,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
     // 宿主要求相对路径；首斜杠会在安装时被拒绝。
     assert_eq!(
         registration["routes"],
-        json!([{"method": "GET", "path": "status", "request_content_types": [],
+        json!([{"method":"GET","path":"settings","request_content_types":[],"response_content_types":["application/json"]},{"method":"POST","path":"settings","request_content_types":["application/json"],"response_content_types":["application/json"]},{"method": "GET", "path": "status", "request_content_types": [],
             "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"logic", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"logic-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-review", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
     );
     assert!(
@@ -1221,6 +1272,193 @@ async fn visual_request(
         )
         .await?;
     Ok(serde_json::from_slice(&response.payload).unwrap())
+}
+
+fn settings_store(c: &Config) -> FakeStore {
+    FakeStore {
+        plugin_instances: Some(json!([
+            {"id":"another-instance","name":"Unrelated","artifactSha256":"b".repeat(64),"enabled":true,"configuration":{"private":"do-not-return"},"bindings":[],"revision":11},
+            {"id":"quality-instance","name":"Existing name","artifactSha256":"a".repeat(64),"enabled":true,"configuration":c,"bindings":[{"contribution":"preserved-binding"}],"revision":12,"secretFields":["private"]}
+        ])),
+        ..FakeStore::default()
+    }
+}
+
+fn settings_input(c: &Config) -> Value {
+    json!({
+        "expected_revision":12,"enabled":c.enabled,"auto_probe":c.auto_probe,
+        "account_ids":c.account_ids,"model":c.model,"max_daily_attempts":c.max_daily_attempts,
+        "max_output_tokens":c.max_output_tokens
+    })
+}
+
+#[tokio::test]
+async fn settings_form_saves_only_its_instance_preserving_legacy_limits_and_evidence() {
+    let mut c = config();
+    c.max_daily_attempts = 7;
+    c.max_daily_output_tokens = 20000;
+    c.policy.unknown_retry_ms = 600000;
+    c.business_key_ids = vec!["key_existing".into()];
+    let mut peer = Peer::start(&c).await;
+    let mut store = settings_store(&c);
+    store.seed_record(&Record::new(c.tag(), 1));
+    let saved_state = serde_json::to_value(&store.state).unwrap();
+    let frame = peer
+        .invoke(
+            &mut store,
+            "management.handle",
+            Stage::Management,
+            json!({"method":"GET","path":"settings","query":"","content_type":null}),
+            vec![],
+        )
+        .await
+        .unwrap();
+    let settings: Value = serde_json::from_slice(&frame.payload).unwrap();
+    assert_eq!(settings["revision"], 12);
+    assert_eq!(settings["config"].as_object().unwrap().len(), 6);
+    assert_eq!(settings["accounts"][0]["account_id"], ACCOUNT);
+    assert!(
+        settings["models"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("gpt-6-astra"))
+    );
+    assert_eq!(settings["fixed"]["max_daily_output_tokens"], 20000);
+    assert!(
+        !String::from_utf8(frame.payload)
+            .unwrap()
+            .contains("do-not-return")
+    );
+
+    let mut input = settings_input(&c);
+    input["auto_probe"] = json!(true);
+    let result = visual_request(&mut peer, &mut store, "settings", input)
+        .await
+        .unwrap();
+    assert_eq!(result, json!({"status":"settings_saved","revision":13}));
+    let update = &store.settings_updates[0];
+    assert_eq!(update["id"], "quality-instance");
+    let instance = &update["instance"];
+    assert_eq!(instance["name"], "Existing name");
+    assert_eq!(instance["artifactSha256"], "a".repeat(64));
+    assert_eq!(instance["enabled"], true);
+    assert_eq!(instance["expectedRevision"], 12);
+    assert_eq!(
+        instance["bindings"],
+        json!([{"contribution":"preserved-binding"}])
+    );
+    assert!(instance.get("secrets").is_none());
+    let saved = &instance["configuration"];
+    assert_eq!(saved["max_daily_output_tokens"], 20000);
+    assert_eq!(saved["policy"], json!({"unknown_retry_ms":600000}));
+    assert_eq!(saved["business_key_ids"], json!(["key_existing"]));
+    assert!(saved.get("confidence_threshold").is_none());
+    assert!(saved.get("probe_daily_usd").is_none());
+    let saved_config: Config = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(saved_config.tag(), c.tag());
+    assert_eq!(serde_json::to_value(&store.state).unwrap(), saved_state);
+
+    let mut input = settings_input(&saved_config);
+    input["expected_revision"] = json!(13);
+    input["max_daily_attempts"] = json!(8);
+    visual_request(&mut peer, &mut store, "settings", input)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.settings_updates[1]["instance"]["configuration"]["max_daily_output_tokens"],
+        8 * c.max_output_tokens
+    );
+    for method in [
+        "host.model.execute_stream",
+        "host.state.put",
+        "host.groups.ensure",
+        "host.keys.ensure",
+        "host.keys.update_budget_limits",
+        "host.groups.change_members",
+    ] {
+        assert_eq!(store.count(method), 0, "settings must not call {method}");
+    }
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn settings_reject_stale_invalid_accounts_and_active_probes_without_mutation() {
+    let c = config();
+    let mut peer = Peer::start(&c).await;
+    let mut store = settings_store(&c);
+    for patch in [
+        json!({"expected_revision":11}),
+        json!({"enabled":true,"account_ids":[]}),
+        json!({"account_ids":[ACCOUNT,ACCOUNT]}),
+        json!({"account_ids":["acct_missing"]}),
+        json!({"model":"not-a-model"}),
+        json!({"max_daily_attempts":0}),
+        json!({"max_output_tokens":16385}),
+        json!({"artifactSha256":"injected"}),
+    ] {
+        let mut input = settings_input(&c);
+        input
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(
+            visual_request(&mut peer, &mut store, "settings", input)
+                .await
+                .is_err()
+        );
+    }
+    assert!(store.settings_updates.is_empty());
+    store.extra_account = true;
+    store.disabled_extra_account = true;
+    let mut input = settings_input(&c);
+    input["account_ids"] = json!(["acct_probe_2"]);
+    assert!(
+        visual_request(&mut peer, &mut store, "settings", input.clone())
+            .await
+            .is_err()
+    );
+    store.disabled_extra_account = false;
+    let mut record = Record::new(c.tag(), 1);
+    record.lease_until_ms = i64::MAX;
+    store.seed_record(&record);
+    assert!(
+        visual_request(&mut peer, &mut store, "settings", input)
+            .await
+            .is_err(),
+        "removing an account must still check its active probe"
+    );
+    assert!(store.settings_updates.is_empty());
+
+    record.lease_until_ms = 0;
+    store.seed_record(&record);
+    store.reject_settings_update = true;
+    assert!(
+        visual_request(&mut peer, &mut store, "settings", settings_input(&c))
+            .await
+            .is_err()
+    );
+    assert_eq!(store.settings_updates.len(), 1);
+    assert_eq!(store.plugin_instances.as_ref().unwrap()[1]["revision"], 12);
+    store.reject_settings_update = false;
+    store.disabled_extra_account = true;
+    store.plugin_instances.as_mut().unwrap()[1]["configuration"]["account_ids"] =
+        json!(["acct_probe_2"]);
+    let mut retained = settings_input(&c);
+    retained["account_ids"] = json!(["acct_probe_2"]);
+    assert!(
+        visual_request(&mut peer, &mut store, "settings", retained)
+            .await
+            .is_ok(),
+        "an already managed disabled account can be preserved"
+    );
+    for method in [
+        "host.model.execute_stream",
+        "host.state.put",
+        "host.groups.change_members",
+    ] {
+        assert_eq!(store.count(method), 0);
+    }
+    peer.shutdown().await;
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@ mod config;
 mod engine;
 mod host;
 pub mod scorer;
+mod settings;
 pub mod state;
 pub use config::Config;
 use gateway_plugin_sdk::{
@@ -49,6 +50,18 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
         .management(
             ManagementRegistration {
                 routes: vec![
+                    ManagementRoute {
+                        method: "GET".into(),
+                        path: "settings".into(),
+                        request_content_types: vec![],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "settings".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
                     ManagementRoute {
                         method: "GET".into(),
                         path: "status".into(),
@@ -102,21 +115,38 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                     path: "web/index.html".into(),
                     public: false,
                 }],
-                pages: vec![ManagementPage {
-                    id: "quality-probes".into(),
-                    title: "账号质量探针".into(),
-                    description: Some(
-                        "逐账号运行 ModelTrace 三题指纹、鹈鹕绘图与糖果逻辑测试".into(),
-                    ),
-                    entry: "web/index.html".into(),
-                    icon: None,
-                }],
+                pages: vec![
+                    ManagementPage {
+                        id: "quality-probes".into(),
+                        title: "账号质量探针".into(),
+                        description: Some(
+                            "逐账号运行 ModelTrace 三题指纹、鹈鹕绘图与糖果逻辑测试".into(),
+                        ),
+                        entry: "web/index.html".into(),
+                        icon: None,
+                    },
+                    ManagementPage {
+                        id: "probe-settings".into(),
+                        title: "探针设置".into(),
+                        description: Some("选择纳管账号、检测方式与探针额度".into()),
+                        entry: "web/index.html".into(),
+                        icon: None,
+                    },
+                ],
                 callbacks: vec![],
             },
             move |call| {
                 let config = Arc::clone(&status_config);
                 async move {
                     let value = match (call.request.method.as_str(), call.request.path.as_str()) {
+                        ("GET", "settings") => {
+                            settings::read(&call.host, &call.context.instance_id).await?
+                        }
+                        ("POST", "settings") => {
+                            let input = serde_json::from_slice(&call.payload)
+                                .map_err(|_| host::fault("invalid_settings_request"))?;
+                            settings::save(&call.host, &call.context.instance_id, input).await?
+                        }
                         ("GET", "status") => engine::status(&call.host, &config).await?,
                         ("POST", "visual" | "logic") => {
                             let input = serde_json::from_slice(&call.payload)

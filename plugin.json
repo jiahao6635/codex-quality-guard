@@ -3,7 +3,7 @@
   "name": "quality-guard",
   "displayName": "模型质量守护",
   "publisher": "jiahao6635",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "按账号进行三题 ModelTrace 指纹、鹈鹕绘图与糖果逻辑测试，连续指纹异常后冷却，复测通过后恢复。",
   "license": "MIT",
   "author": "jiahao6635",
@@ -22,7 +22,8 @@
     "properties": {
       "enabled": {
         "type": "boolean",
-        "default": false
+        "default": false,
+        "title": "启用探针"
       },
       "account_ids": {
         "type": "array",
@@ -31,11 +32,13 @@
         },
         "maxItems": 100,
         "uniqueItems": true,
-        "default": []
+        "default": [],
+        "title": "纳管账号"
       },
       "model": {
         "type": "string",
-        "default": "gpt-6-astra"
+        "default": "gpt-6-astra",
+        "title": "ModelTrace 目标模型"
       },
       "business_key_ids": {
         "type": "array",
@@ -43,44 +46,52 @@
           "type": "string"
         },
         "maxItems": 20,
-        "default": []
+        "default": [],
+        "title": "兼容：额外业务 Key 范围校验"
       },
       "confidence_threshold": {
         "type": "number",
         "minimum": 0.9,
         "maximum": 1,
-        "default": 0.99
+        "default": 0.99,
+        "title": "固定规则：指纹置信阈值"
       },
       "max_daily_attempts": {
         "type": "integer",
         "minimum": 1,
         "maximum": 10000,
-        "default": 100
+        "default": 100,
+        "title": "每日请求上限"
       },
       "max_output_tokens": {
         "type": "integer",
         "minimum": 2048,
         "maximum": 16384,
-        "default": 4096
+        "default": 4096,
+        "title": "单次输出上限"
       },
       "max_daily_output_tokens": {
         "type": "integer",
         "minimum": 2048,
-        "default": 409600
+        "default": 409600,
+        "title": "每日预留输出上限（表单自动计算）"
       },
       "probe_daily_usd": {
         "type": "string",
-        "default": "5"
+        "default": "5",
+        "title": "探针 Key 日费用上限（美元）"
       },
       "probe_weekly_usd": {
         "type": "string",
-        "default": "25"
+        "default": "25",
+        "title": "探针 Key 周费用上限（美元）"
       },
       "max_quarantined_percent": {
         "type": "integer",
         "minimum": 1,
         "maximum": 100,
-        "default": 50
+        "default": 50,
+        "title": "固定规则：全池隔离比例保护"
       },
       "policy": {
         "type": "object",
@@ -141,15 +152,18 @@
           }
         },
         "additionalProperties": false,
-        "default": {}
+        "default": {},
+        "title": "固定规则：冷却与恢复策略"
       },
       "auto_probe": {
         "type": "boolean",
         "default": false,
-        "description": "启用宿主周期维护探针；每次最多探测一个到期账号"
+        "description": "启用宿主周期维护探针；每次最多探测一个到期账号",
+        "title": "自动执行 ModelTrace"
       }
     },
-    "additionalProperties": false
+    "additionalProperties": false,
+    "description": "常用配置请使用扩展页“探针设置”：勾选账号、选择模型与预算；此结构保留旧配置兼容。"
   },
   "state": [
     {
