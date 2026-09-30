@@ -67,6 +67,18 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                         request_content_types: vec!["application/json".into()],
                         response_content_types: vec!["application/json".into()],
                     },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "visual".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "visual-evidence".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
                 ],
                 resources: vec![ManagementResource {
                     path: "web/index.html".into(),
@@ -75,7 +87,7 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                 pages: vec![ManagementPage {
                     id: "quality-probes".into(),
                     title: "账号质量探针".into(),
-                    description: Some("查看各账号探针结果、冷却状态，并手动检测一次".into()),
+                    description: Some("逐账号运行 ModelTrace 三题指纹与鹈鹕可视化对比".into()),
                     entry: "web/index.html".into(),
                     icon: None,
                 }],
@@ -86,7 +98,18 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                 async move {
                     let value = match (call.request.method.as_str(), call.request.path.as_str()) {
                         ("GET", "status") => engine::status(&call.host, &config).await?,
-                        ("POST", "probe" | "evidence") => {
+                        ("POST", "visual") => {
+                            let input = serde_json::from_slice(&call.payload)
+                                .map_err(|_| host::fault("invalid_visual_request"))?;
+                            engine::visual(
+                                &call.host,
+                                &config,
+                                input,
+                                probe_timeout(call.context.timeout_ms)?,
+                            )
+                            .await?
+                        }
+                        ("POST", "probe" | "evidence" | "visual-evidence") => {
                             #[derive(serde::Deserialize)]
                             #[serde(deny_unknown_fields)]
                             struct Probe {
@@ -94,7 +117,10 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                             }
                             let input: Probe = serde_json::from_slice(&call.payload)
                                 .map_err(|_| host::fault("invalid_probe_request"))?;
-                            if call.request.path == "evidence" {
+                            if call.request.path == "visual-evidence" {
+                                engine::visual_evidence(&call.host, &config, &input.account_id)
+                                    .await?
+                            } else if call.request.path == "evidence" {
                                 engine::evidence(&call.host, &config, &input.account_id).await?
                             } else {
                                 engine::tick(

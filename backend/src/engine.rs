@@ -75,6 +75,49 @@ struct Budget {
     reserved_output_tokens: u64,
 }
 
+const VISUAL_PROMPT: &str = "请制作一个精美的单文件 HTML 页面，主题是‘鹈鹕骑自行车’：画面必须清晰呈现一只具有长喙和喉囊的鹈鹕正在骑自行车，双脚踩在脚踏上；车架、两只车轮、车把、座椅和身体结构协调。设计完整的海边骑行场景、配色、中文标题和少量排版细节，用内联 SVG 绘制主体与背景、CSS 制作车轮和踩踏的循环动画。布局自适应，尊重 prefers-reduced-motion。只用 HTML、内联 SVG 和 CSS，不使用 JavaScript、外部图片、字体、网络资源、表单或 iframe。控制在 3000 个输出 token 左右。只输出从 <!DOCTYPE html> 到 </html> 的完整 HTML 文档，不要 Markdown 代码围栏或解释。";
+const VISUAL_MAXIMUM_BYTES: usize = 24 * 1024;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualRequest {
+    pub account_id: String,
+    model: String,
+    reasoning_effort: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct VisualEvidence {
+    id: String,
+    account_id: String,
+    model: String,
+    reasoning_effort: String,
+    started_at_ms: i64,
+    completed_at_ms: i64,
+    duration_ms: u128,
+    request_id: Option<String>,
+    output: Option<String>,
+    prompt: String,
+    status: String,
+    error: Option<String>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct VisualHistory {
+    visual_tests: Vec<VisualEvidence>,
+}
+
+fn visual_models(c: &Config) -> Vec<String> {
+    let mut models: Vec<_> = scorer::supported_models()
+        .into_iter()
+        .filter(|id| id.starts_with("gpt-"))
+        .collect();
+    if !models.contains(&c.model) && scorer::supports_model(&c.model) {
+        models.push(c.model.clone());
+    }
+    models
+}
+
 async fn load(
     host: &HostClient,
     id: &str,
@@ -355,6 +398,9 @@ async fn prune_removed_accounts(host: &HostClient, c: &Config) -> Result<(), Plu
             }
             host::delete(host, &key, version).await?;
         }
+        if let Some((_, version)) = host::get_in::<VisualHistory>(host, "visual", &key).await? {
+            host::delete_in(host, "visual", &key, version).await?;
+        }
     }
     retained.sort();
     retained.dedup();
@@ -445,7 +491,11 @@ pub async fn tick(
         return Ok(json!({"status":"no_due_account"}));
     };
     let now = host::now();
-    if !s.quality.lease_id.is_empty() {
+    if s.quality.lease_id.starts_with("visual:") {
+        // A cancelled visual comparison never changes fingerprint evidence or quality.
+        s.quality.lease_id.clear();
+        s.quality.lease_until_ms = 0;
+    } else if !s.quality.lease_id.is_empty() {
         s.quality.observe(Verdict::Unknown, "", now, &c.policy);
         s.quality.last_error = Some("expired_probe_lease".into());
         s.batch = None;
@@ -628,6 +678,184 @@ fn classify(s: &Score, c: &Config) -> Verdict {
         Verdict::Unknown
     }
 }
+
+pub async fn visual(
+    host: &HostClient,
+    c: &Config,
+    input: VisualRequest,
+    timeout: Duration,
+) -> Result<Value, PluginFault> {
+    let started = Instant::now();
+    let id = &input.account_id;
+    if !c.account_ids.contains(id) {
+        return Err(fault("account_not_managed"));
+    }
+    if !visual_models(c).contains(&input.model)
+        || !["low", "medium", "high"].contains(&input.reasoning_effort.as_str())
+    {
+        return Err(fault("invalid_visual_model_or_effort"));
+    }
+    if !c.enabled {
+        return Ok(json!({"status":"disabled","account_id":id}));
+    }
+    let r = resources(host).await?;
+    check_keys(host, &r, c).await?;
+    check_probe_budget(host, &r, c).await?;
+    if !host::accounts(host).await?.iter().any(|account| {
+        account.account_id == *id
+            && managed(account, c)
+            && account.group_ids.contains(&r.probe_group_id)
+    }) {
+        return Err(fault("account_not_available_in_probe_group"));
+    }
+    let key = host::account_key(id);
+    // Visual comparisons never migrate or reset fingerprint state for a new configuration.
+    let stored = host::get::<AccountState>(host, &key).await?;
+    let version = stored.as_ref().map(|record| record.1);
+    let mut state = stored.map(|record| record.0).unwrap_or(AccountState {
+        quality: Record::new(c.tag(), host::now()),
+        history: vec![],
+        batch: None,
+    });
+    let now = host::now();
+    if state.quality.lease_until_ms > now
+        || state.quality.updated_at_ms > now
+        // Only the fingerprint path may resolve an interrupted fingerprint lease.
+        || (!state.quality.lease_id.is_empty()
+            && !state.quality.lease_id.starts_with("visual:"))
+    {
+        return Ok(json!({"status":"account_busy","account_id":id}));
+    }
+    let old = host::get_in::<VisualHistory>(host, "visual", &key).await?;
+    let history_version = old.as_ref().map(|record| record.1);
+    let mut history = old.map(|record| record.0).unwrap_or_default();
+    let lease = format!(
+        "visual:{now}:{}:{}",
+        std::process::id(),
+        version.unwrap_or(0)
+    );
+    state.quality.lease_id = lease.clone();
+    state.quality.lease_until_ms = now.saturating_add(150000);
+    let claimed = host::put(host, &key, &state, version).await?;
+    match reserve_budget(host, c).await {
+        Ok(true) => {}
+        other => {
+            state.quality.lease_id.clear();
+            state.quality.lease_until_ms = 0;
+            host::put(host, &key, &state, Some(claimed)).await?;
+            return match other {
+                Ok(false) => Ok(json!({"status":"daily_budget_exhausted","account_id":id})),
+                Err(error) => Err(error),
+                _ => unreachable!(),
+            };
+        }
+    }
+    let payload = json!({"model":input.model,"input":[{"role":"user","content":[{"type":"input_text","text":VISUAL_PROMPT}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":input.reasoning_effort}});
+    let result = tokio::time::timeout(
+        timeout.saturating_sub(started.elapsed()),
+        execute_model(host, &r.probe_key_id, id, &input.model, &payload),
+    )
+    .await;
+    let (request_id, output, error) = match result {
+        Ok(Ok((request_id, events))) => match visual_output(events) {
+            Ok(output) => (Some(request_id), Some(output), None),
+            Err(error) => (Some(request_id), None, Some(error)),
+        },
+        Ok(Err((request_id, error))) => (request_id, None, Some(error)),
+        Err(_) => (None, None, Some("visual_timeout".into())),
+    };
+    let finished = host::now();
+    let mut sample = VisualEvidence {
+        id: format!(
+            "visual-{:x}",
+            Sha256::digest(format!("{id}:{lease}").as_bytes())
+        ),
+        account_id: id.clone(),
+        model: input.model,
+        reasoning_effort: input.reasoning_effort,
+        started_at_ms: now,
+        completed_at_ms: finished,
+        duration_ms: started.elapsed().as_millis(),
+        request_id,
+        output,
+        prompt: VISUAL_PROMPT.into(),
+        status: if error.is_none() {
+            "completed"
+        } else {
+            "error"
+        }
+        .into(),
+        error,
+    };
+    if finished >= state.quality.lease_until_ms || finished < now {
+        sample.error = Some("expired_or_clock_shifted_visual".into());
+    }
+    if serde_json::to_vec(&sample)
+        .map_err(|_| fault("visual_encode"))?
+        .len()
+        > VISUAL_MAXIMUM_BYTES
+    {
+        sample.error = Some("output_too_large".into());
+    }
+    if sample.error.is_some() {
+        sample.status = "error".into();
+        sample.output = None;
+    }
+    history.visual_tests.push(sample.clone());
+    let discard = history.visual_tests.len().saturating_sub(4);
+    history.visual_tests.drain(..discard);
+    let saved = host::put_in(host, "visual", &key, &history, history_version).await;
+    state.quality.lease_id.clear();
+    state.quality.lease_until_ms = 0;
+    // Release even if saving evidence failed; CAS never overwrites a replacement worker.
+    let released = host::put(host, &key, &state, Some(claimed)).await;
+    saved?;
+    released?;
+    Ok(json!({"status":"visual_recorded","account_id":id,"visual_sample":sample}))
+}
+
+fn visual_output(events: ModelEventBatch) -> Result<String, String> {
+    let output = bounded_output(events, VISUAL_MAXIMUM_BYTES)?;
+    let raw = output.trim();
+    let document = if let Some((marker, body)) = raw.split_once('\n')
+        && matches!(marker.trim(), "```html" | "```HTML" | "```")
+    {
+        body.trim()
+            .strip_suffix("```")
+            .ok_or("incomplete_html_document")?
+            .trim()
+    } else {
+        raw
+    };
+    let html = document.to_ascii_lowercase();
+    if !(html.starts_with("<!doctype html>") || html.starts_with("<html"))
+        || !html.contains("<html")
+        || !html.contains("<head")
+        || !html.contains("</head>")
+        || !html.contains("<body")
+        || !html.contains("</body>")
+        || !html.ends_with("</html>")
+    {
+        return Err("incomplete_html_document".into());
+    }
+    Ok(output)
+}
+
+pub async fn visual_evidence(
+    host: &HostClient,
+    c: &Config,
+    account: &str,
+) -> Result<Value, PluginFault> {
+    if !c.account_ids.iter().any(|id| id == account) {
+        return Err(fault("account_not_managed"));
+    }
+    let history = host::get_in::<VisualHistory>(host, "visual", &host::account_key(account))
+        .await?
+        .map(|record| record.0)
+        .unwrap_or_default();
+    Ok(json!({"account_id":account,"visual_tests":history.visual_tests}))
+}
+
 async fn execute(
     host: &HostClient,
     c: &Config,
@@ -635,17 +863,30 @@ async fn execute(
     account: &str,
     challenge: &scorer::Challenge,
 ) -> Result<(String, String), (Option<String>, String)> {
+    let payload = json!({"model":c.model,"input":[{"role":"user","content":[{"type":"input_text","text":challenge.prompt}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":"low"}});
+    let (request_id, batch) = execute_model(host, key, account, &c.model, &payload).await?;
+    valid_output(batch)
+        .map(|output| (request_id.clone(), output))
+        .map_err(|error| (Some(request_id), error))
+}
+
+async fn execute_model(
+    host: &HostClient,
+    key: &str,
+    account: &str,
+    model: &str,
+    payload: &Value,
+) -> Result<(String, ModelEventBatch), (Option<String>, String)> {
     let failure = |reason: &str| (None, reason.to_string());
     let meta = ModelExecuteRequest {
         client_key_id: Some(key.into()),
-        model: c.model.clone(),
+        model: model.into(),
         protocol: "openai".into(),
         operation: ModelOperation::Generate,
         provider: Some(PROVIDER.into()),
         account_id: Some(account.into()),
         previous_response_id: None,
     };
-    let payload = json!({"model":c.model,"input":[{"role":"user","content":[{"type":"input_text","text":challenge.prompt}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":"low"}});
     let reply = host
         .call(
             "host.model.execute",
@@ -656,12 +897,12 @@ async fn execute(
         .map_err(|_| failure("upstream_or_host_execution_failed"))?;
     let result: ModelExecuteResult =
         serde_json::from_value(reply.result).map_err(|_| failure("invalid_model_metadata"))?;
-    let output = (|| -> Result<String, String> {
+    let output = (|| -> Result<ModelEventBatch, String> {
         let batch = ModelEventBatch::decode(&reply.payload).map_err(|_| "invalid_event_batch")?;
         if result.events as usize != batch.events.len() {
             return Err("event_count_mismatch".into());
         }
-        valid_output(batch)
+        Ok(batch)
     })();
     match output {
         Ok(text) => Ok((result.request_id, text)),
@@ -670,6 +911,10 @@ async fn execute(
 }
 
 fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
+    bounded_output(batch, 16384)
+}
+
+fn bounded_output(batch: ModelEventBatch, maximum_bytes: usize) -> Result<String, String> {
     let mut text = String::new();
     let mut completed = false;
 
@@ -715,7 +960,7 @@ fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
                         return Err("ambiguous_output".into());
                     }
                     text.push_str(&delta);
-                    if text.len() > 16384 {
+                    if text.len() > maximum_bytes {
                         return Err("output_too_large".into());
                     }
                 }
@@ -737,7 +982,7 @@ fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
     if serde_json::to_vec(&text)
         .map_err(|_| "invalid_output_encoding")?
         .len()
-        > 16384
+        > maximum_bytes
     {
         return Err("output_too_large".into());
     }
@@ -783,7 +1028,14 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
     for id in &c.account_ids {
         let (s, _) = load(host, id, c).await?;
         let account = accounts.iter().find(|a| a.account_id == *id);
-        records.push(json!({"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"batch":batch_summary(s.batch.as_ref()),"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
+        let mut visual = visual_evidence(host, c, id).await?;
+        for sample in visual["visual_tests"].as_array_mut().into_iter().flatten() {
+            if let Some(sample) = sample.as_object_mut() {
+                sample.remove("output");
+                sample.remove("prompt");
+            }
+        }
+        records.push(json!({"visual_tests":visual["visual_tests"],"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"batch":batch_summary(s.batch.as_ref()),"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
     }
     let scope_ok = if let Some(r) = &r {
         check_keys(host, r, c).await.is_ok()
@@ -796,7 +1048,7 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
         false
     };
     Ok(
-        json!({"enabled":c.enabled,"auto_probe":c.auto_probe,"probe_limits":{"max_daily_attempts":c.max_daily_attempts,"max_daily_output_tokens":c.max_daily_output_tokens,"max_output_tokens":c.max_output_tokens},"model":c.model,"scorer_version":scorer::VERSION,"classifier_scores_are_not_model_identity_proof":true,"key_scopes_ok":scope_ok,"probe_budget_ok":budget_ok,"resources":r,"budget":host::get::<Budget>(host,"budget").await?.map(|v|v.0),"maintenance":host::get::<Value>(host,"maintenance").await?.map(|v|v.0),"accounts":records}),
+        json!({"visual_models":visual_models(c),"visual_efforts":["low","medium","high"],"visual_timeout_ms":110000,"enabled":c.enabled,"auto_probe":c.auto_probe,"probe_limits":{"max_daily_attempts":c.max_daily_attempts,"max_daily_output_tokens":c.max_daily_output_tokens,"max_output_tokens":c.max_output_tokens},"model":c.model,"scorer_version":scorer::VERSION,"classifier_scores_are_not_model_identity_proof":true,"key_scopes_ok":scope_ok,"probe_budget_ok":budget_ok,"resources":r,"budget":host::get::<Budget>(host,"budget").await?.map(|v|v.0),"maintenance":host::get::<Value>(host,"maintenance").await?.map(|v|v.0),"accounts":records}),
     )
 }
 
@@ -909,5 +1161,55 @@ mod tests {
             "1,2,3"
         );
         assert!(bad_wire(&json!({"response":{"status":"incomplete"}})));
+    }
+
+    #[test]
+    fn visual_evidence_requires_a_complete_bounded_document_and_preserves_raw_fences() {
+        let events = |text: &str, reason| ModelEventBatch {
+            events: vec![
+                ExecutionEvent::canonical(CanonicalEvent::TextDelta {
+                    index: 0,
+                    text: text.into(),
+                }),
+                ExecutionEvent::canonical(CanonicalEvent::Completed {
+                    id: "visual".into(),
+                    model: None,
+                    reason,
+                }),
+            ],
+        };
+        let html = "<!DOCTYPE html><html><head></head><body><svg></svg></body></html>";
+        for raw in [
+            html.to_string(),
+            format!("```html\n{html}\n```"),
+            format!("```\r\n{html}\r\n```"),
+        ] {
+            assert_eq!(
+                visual_output(events(&raw, FinishReason::Stop)).unwrap(),
+                raw
+            );
+        }
+        for raw in [
+            "<svg></svg>",
+            "<!doctype html><html><head></head><body>",
+            "```html\n<html><head></head><body></body></html>",
+        ] {
+            assert_eq!(
+                visual_output(events(raw, FinishReason::Stop)).unwrap_err(),
+                "incomplete_html_document"
+            );
+        }
+        assert!(visual_output(events(html, FinishReason::Length)).is_err());
+        assert_eq!(
+            visual_output(events(
+                &format!(
+                    "<html><head></head><body>{}</body></html>",
+                    "x".repeat(VISUAL_MAXIMUM_BYTES)
+                ),
+                FinishReason::Stop
+            ))
+            .unwrap_err(),
+            "output_too_large"
+        );
     }
 }

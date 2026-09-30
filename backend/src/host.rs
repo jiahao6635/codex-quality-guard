@@ -25,11 +25,18 @@ pub async fn get<T: DeserializeOwned>(
     host: &HostClient,
     key: &str,
 ) -> Result<Option<(T, u64)>, PluginFault> {
+    get_in(host, "quality", key).await
+}
+pub async fn get_in<T: DeserializeOwned>(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+) -> Result<Option<(T, u64)>, PluginFault> {
     let reply = host
         .call(
             "host.state.get",
             serde_json::to_value(StateGetRequest {
-                namespace: "quality".into(),
+                namespace: namespace.into(),
                 key: key.into(),
             })
             .map_err(|_| fault("state_encode"))?,
@@ -61,8 +68,17 @@ pub async fn put<T: Serialize>(
     value: &T,
     version: Option<u64>,
 ) -> Result<u64, PluginFault> {
+    put_in(host, "quality", key, value, version).await
+}
+pub async fn put_in<T: Serialize>(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+    value: &T,
+    version: Option<u64>,
+) -> Result<u64, PluginFault> {
     let input = StatePutRequest {
-        namespace: "quality".into(),
+        namespace: namespace.into(),
         key: key.into(),
         value: serde_json::to_value(value).map_err(|_| fault("state_encode"))?,
         expected_version: version,
@@ -117,11 +133,19 @@ pub async fn accounts(host: &HostClient) -> Result<Vec<AccountFacts>, PluginFaul
 }
 
 pub async fn delete(host: &HostClient, key: &str, version: u64) -> Result<(), PluginFault> {
+    delete_in(host, "quality", key, version).await
+}
+pub async fn delete_in(
+    host: &HostClient,
+    namespace: &str,
+    key: &str,
+    version: u64,
+) -> Result<(), PluginFault> {
     let reply = host
         .call(
             "host.state.delete",
             serde_json::to_value(gateway_plugin_sdk::call::host::StateDeleteRequest {
-                namespace: "quality".into(),
+                namespace: namespace.into(),
                 key: key.into(),
                 expected_version: version,
             })

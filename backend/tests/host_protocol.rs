@@ -38,6 +38,7 @@ struct FakeStore {
     probe_budget_too_wide: bool,
     extra_account: bool,
     valid_model_output: bool,
+    visual_output: Option<String>,
     http_body: Option<Vec<u8>>,
     deny_budget: bool,
     fail_membership_read: bool,
@@ -56,17 +57,19 @@ impl FakeStore {
             serde_json::from_slice(payload).unwrap()
         };
         self.calls.push((method.to_owned(), data.clone()));
+        let state_key = if params["namespace"] == "visual" {
+            format!("visual:{}", params["key"].as_str().unwrap())
+        } else {
+            params["key"].as_str().unwrap_or("").to_owned()
+        };
         let response = match method {
             "host.state.get" => {
-                assert_eq!(params["namespace"], "quality");
-                return Ok((
-                    json!({"record": self.state.get(params["key"].as_str().unwrap())}),
-                    vec![],
-                ));
+                assert!(["quality", "visual"].contains(&params["namespace"].as_str().unwrap()));
+                return Ok((json!({"record": self.state.get(&state_key)}), vec![]));
             }
             "host.state.put" => {
-                assert_eq!(params["namespace"], "quality");
-                let key = params["key"].as_str().unwrap().to_owned();
+                assert!(["quality", "visual"].contains(&params["namespace"].as_str().unwrap()));
+                let key = state_key;
                 let existing = self.state.get(&key).map(|record| record.version);
                 if existing != params["expected_version"].as_u64()
                     || (self.reject_account_writes && key.starts_with("account."))
@@ -88,8 +91,8 @@ impl FakeStore {
                 return Ok((json!({"version": version}), vec![]));
             }
             "host.state.delete" => {
-                assert_eq!(params["namespace"], "quality");
-                let key = params["key"].as_str().unwrap();
+                assert!(["quality", "visual"].contains(&params["namespace"].as_str().unwrap()));
+                let key = state_key.as_str();
                 if let Some(record) = self.state.get(key)
                     && Some(record.version) != params["expected_version"].as_u64()
                 {
@@ -233,10 +236,9 @@ impl FakeStore {
                     [ACCOUNT, "acct_probe_2"].contains(&params["account_id"].as_str().unwrap())
                 );
                 assert_eq!(params["provider"], "openai");
-                assert_eq!(params["model"], "gpt-6-astra");
+                assert_eq!(params["model"], data["model"]);
                 assert!(params["previous_response_id"].is_null());
                 assert_eq!(data["input"].as_array().unwrap().len(), 1);
-                assert_eq!(data["model"], "gpt-6-astra");
                 if self.take_over_during_model {
                     let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
                     let record = self
@@ -254,7 +256,9 @@ impl FakeStore {
                     }),
                     ExecutionEvent::canonical(CanonicalEvent::TextDelta {
                         index: 0,
-                        text: if self.valid_model_output {
+                        text: if let Some(output) = &self.visual_output {
+                            output.clone()
+                        } else if self.valid_model_output {
                             format!(
                                 "完整回答：\n```\n{}\n```",
                                 (1..=300)
@@ -517,7 +521,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
     assert_eq!(
         registration["routes"],
         json!([{"method": "GET", "path": "status", "request_content_types": [],
-            "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
+            "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
     );
     assert!(
         store.calls.is_empty(),
@@ -1103,5 +1107,246 @@ async fn six_invalid_answers_finish_unknown_without_fingerprint_or_admission() {
         "no_due_account"
     );
     assert_eq!(store.count("host.model.execute"), 6);
+    peer.shutdown().await;
+}
+
+async fn visual_request(
+    peer: &mut Peer,
+    store: &mut FakeStore,
+    path: &str,
+    payload: Value,
+) -> Result<Value, PluginFault> {
+    let response = peer
+        .invoke(
+            store,
+            "management.handle",
+            Stage::Management,
+            json!({"method":"POST","path":path,"query":"","content_type":"application/json"}),
+            serde_json::to_vec(&payload).unwrap(),
+        )
+        .await?;
+    Ok(serde_json::from_slice(&response.payload).unwrap())
+}
+
+#[tokio::test]
+async fn visual_comparisons_target_accounts_keep_four_results_and_share_budget_without_scoring() {
+    let mut c = config();
+    c.account_ids.push("acct_probe_2".into());
+    c.max_daily_attempts = 7;
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        extra_account: true,
+        valid_model_output: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    let first_key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    let second_key = format!("account.{:x}", Sha256::digest(b"acct_probe_2"));
+    let original_first = store.state[&first_key].value.clone();
+    let original_second = store.state[&second_key].value.clone();
+    let input =
+        json!({"account_id":"acct_probe_2","model":"gpt-5.6-sol","reasoning_effort":"medium"});
+    for patch in [
+        json!({"account_id":"unmanaged"}),
+        json!({"model":"arbitrary-model"}),
+        json!({"reasoning_effort":"unbounded"}),
+    ] {
+        let mut bad = input.clone();
+        bad.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(
+            visual_request(&mut peer, &mut store, "visual", bad)
+                .await
+                .is_err()
+        );
+    }
+    let mut ids = BTreeSet::new();
+    for number in 0..5 {
+        let html = format!(
+            "<!DOCTYPE html><html><head><style>svg{{width:100%}}</style></head><body><svg><text>{number}</text></svg></body></html>"
+        );
+        store.visual_output = Some(html.clone());
+        let result = visual_request(&mut peer, &mut store, "visual", input.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "visual_recorded");
+        assert_eq!(result["visual_sample"]["status"], "completed");
+        assert_eq!(result["visual_sample"]["output"], html);
+        assert_eq!(result["visual_sample"]["account_id"], "acct_probe_2");
+        assert_eq!(result["visual_sample"]["model"], "gpt-5.6-sol");
+        assert_eq!(result["visual_sample"]["reasoning_effort"], "medium");
+        assert!(ids.insert(result["visual_sample"]["id"].as_str().unwrap().to_owned()));
+        assert!(result["visual_sample"]["duration_ms"].is_number());
+        assert_eq!(store.state[&first_key].value, original_first);
+        assert_eq!(store.state[&second_key].value, original_second);
+    }
+    assert_eq!(
+        store.model_accounts,
+        [
+            ACCOUNT,
+            "acct_probe_2",
+            "acct_probe_2",
+            "acct_probe_2",
+            "acct_probe_2",
+            "acct_probe_2"
+        ]
+    );
+    let sent = store
+        .calls
+        .iter()
+        .rfind(|(method, _)| method == "host.model.execute")
+        .unwrap();
+    assert_eq!(sent.1["model"], "gpt-5.6-sol");
+    assert_eq!(sent.1["reasoning"]["effort"], "medium");
+    assert!(
+        sent.1["input"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("鹈鹕")
+    );
+    let calls = store.count("host.model.execute");
+    let evidence = visual_request(
+        &mut peer,
+        &mut store,
+        "visual-evidence",
+        json!({"account_id":"acct_probe_2"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(evidence["visual_tests"].as_array().unwrap().len(), 4);
+    assert!(
+        evidence["visual_tests"][0]["output"]
+            .as_str()
+            .unwrap()
+            .contains(">1</text>")
+    );
+    assert_eq!(store.count("host.model.execute"), calls);
+    let status = peer.command(&mut store, "status").await.unwrap();
+    assert_eq!(status["visual_timeout_ms"], 110000);
+    assert!(
+        status["visual_models"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("gpt-5.6-sol"))
+    );
+    assert!(
+        status["accounts"][1]["visual_tests"][0]
+            .get("output")
+            .is_none()
+    );
+    assert!(
+        status["accounts"][1]["visual_tests"][0]
+            .get("prompt")
+            .is_none()
+    );
+    store.visual_output = Some("<svg>fragment</svg>".into());
+    let failure = visual_request(&mut peer, &mut store, "visual", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        failure["visual_sample"]["error"],
+        "incomplete_html_document"
+    );
+    assert!(failure["visual_sample"]["output"].is_null());
+    assert_eq!(store.state[&second_key].value, original_second);
+    assert_eq!(store.state["budget"].value["attempts"], 7);
+    assert_eq!(
+        store.state["budget"].value["reserved_output_tokens"],
+        7 * c.max_output_tokens
+    );
+    let exhausted = visual_request(&mut peer, &mut store, "visual", input)
+        .await
+        .unwrap();
+    assert_eq!(exhausted["status"], "daily_budget_exhausted");
+    assert_eq!(store.count("host.model.execute"), 7);
+    assert_eq!(store.state[&second_key].value, original_second);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn visual_leases_block_overlap_and_expiration_preserves_fingerprint_progress() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore {
+        valid_model_output: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    let first = store.state[&key].value["batch"]["attempts"][0].clone();
+    let input = json!({"account_id":ACCOUNT,"model":"gpt-6-astra","reasoning_effort":"low"});
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_id"] = json!("visual:running");
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_until_ms"] = json!(i64::MAX);
+    assert_eq!(
+        visual_request(&mut peer, &mut store, "visual", input.clone())
+            .await
+            .unwrap()["status"],
+        "account_busy"
+    );
+    assert_eq!(
+        probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
+        "no_due_account"
+    );
+    assert_eq!(store.count("host.model.execute"), 1);
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_until_ms"] = json!(0);
+    let resumed = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(resumed["batch"]["attempts"].as_array().unwrap().len(), 2);
+    assert_eq!(resumed["batch"]["attempts"][0], first);
+    assert!(resumed["quality"]["last_verdict"].is_null());
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_id"] = json!("fingerprint-expired");
+    assert_eq!(
+        visual_request(&mut peer, &mut store, "visual", input)
+            .await
+            .unwrap()["status"],
+        "account_busy"
+    );
+    assert_eq!(store.count("host.model.execute"), 2);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn visual_after_configuration_change_preserves_existing_fingerprint_record() {
+    let mut c = config();
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        valid_model_output: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    let original = store.state[&key].value.clone();
+    peer.shutdown().await;
+
+    c.model = "gpt-5.6-sol".into();
+    assert_ne!(original["quality"]["config_tag"], c.tag());
+    let mut peer = Peer::start(&c).await;
+    store.visual_output =
+        Some("<!doctype html><html><head></head><body><svg></svg></body></html>".into());
+    let result = visual_request(
+        &mut peer,
+        &mut store,
+        "visual",
+        json!({"account_id":ACCOUNT,"model":"gpt-5.6-sol","reasoning_effort":"low"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["visual_sample"]["status"], "completed");
+    assert_eq!(
+        store.state[&key].value, original,
+        "visual evidence must preserve old configuration tag, quality, history and partial fingerprint batch"
+    );
+    assert_eq!(store.state["budget"].value["attempts"], 2);
+    let evidence = visual_request(
+        &mut peer,
+        &mut store,
+        "visual-evidence",
+        json!({"account_id":ACCOUNT}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(evidence["visual_tests"][0]["model"], "gpt-5.6-sol");
     peer.shutdown().await;
 }

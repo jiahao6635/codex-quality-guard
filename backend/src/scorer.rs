@@ -75,6 +75,10 @@ pub fn supports_model(model: &str) -> bool {
     bank().models.iter().any(|candidate| candidate.id == model)
 }
 
+pub fn supported_models() -> Vec<String> {
+    bank().models.iter().map(|model| model.id.clone()).collect()
+}
+
 /// 按种子确定性生成挑战；调用方须为每次探针提供新的种子。
 /// 文案和数量范围与固定版本的上游浏览器生成器一致。
 pub fn challenge(seed: u64) -> Challenge {
