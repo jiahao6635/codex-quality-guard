@@ -79,6 +79,24 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                         request_content_types: vec!["application/json".into()],
                         response_content_types: vec!["application/json".into()],
                     },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "logic".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "logic-evidence".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "visual-review".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
                 ],
                 resources: vec![ManagementResource {
                     path: "web/index.html".into(),
@@ -87,7 +105,9 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                 pages: vec![ManagementPage {
                     id: "quality-probes".into(),
                     title: "账号质量探针".into(),
-                    description: Some("逐账号运行 ModelTrace 三题指纹与鹈鹕可视化对比".into()),
+                    description: Some(
+                        "逐账号运行 ModelTrace 三题指纹、鹈鹕绘图与糖果逻辑测试".into(),
+                    ),
                     entry: "web/index.html".into(),
                     icon: None,
                 }],
@@ -98,18 +118,28 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                 async move {
                     let value = match (call.request.method.as_str(), call.request.path.as_str()) {
                         ("GET", "status") => engine::status(&call.host, &config).await?,
-                        ("POST", "visual") => {
+                        ("POST", "visual" | "logic") => {
                             let input = serde_json::from_slice(&call.payload)
                                 .map_err(|_| host::fault("invalid_visual_request"))?;
-                            engine::visual(
+                            engine::manual_test(
                                 &call.host,
                                 &config,
                                 input,
+                                if call.request.path == "visual" {
+                                    engine::ManualCase::Visual
+                                } else {
+                                    engine::ManualCase::Logic
+                                },
                                 probe_timeout(call.context.timeout_ms)?,
                             )
                             .await?
                         }
-                        ("POST", "probe" | "evidence" | "visual-evidence") => {
+                        ("POST", "visual-review") => {
+                            let input = serde_json::from_slice(&call.payload)
+                                .map_err(|_| host::fault("invalid_visual_review"))?;
+                            engine::visual_review(&call.host, &config, input).await?
+                        }
+                        ("POST", "probe" | "evidence" | "visual-evidence" | "logic-evidence") => {
                             #[derive(serde::Deserialize)]
                             #[serde(deny_unknown_fields)]
                             struct Probe {
@@ -117,9 +147,20 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                             }
                             let input: Probe = serde_json::from_slice(&call.payload)
                                 .map_err(|_| host::fault("invalid_probe_request"))?;
-                            if call.request.path == "visual-evidence" {
-                                engine::visual_evidence(&call.host, &config, &input.account_id)
-                                    .await?
+                            if ["visual-evidence", "logic-evidence"]
+                                .contains(&call.request.path.as_str())
+                            {
+                                engine::manual_evidence(
+                                    &call.host,
+                                    &config,
+                                    &input.account_id,
+                                    if call.request.path == "visual-evidence" {
+                                        engine::ManualCase::Visual
+                                    } else {
+                                        engine::ManualCase::Logic
+                                    },
+                                )
+                                .await?
                             } else if call.request.path == "evidence" {
                                 engine::evidence(&call.host, &config, &input.account_id).await?
                             } else {

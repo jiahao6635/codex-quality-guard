@@ -78,19 +78,20 @@ struct Budget {
     reserved_output_tokens: u64,
 }
 
-const VISUAL_PROMPT: &str = "请制作一个精美的单文件 HTML 页面，主题是‘鹈鹕骑自行车’：画面必须清晰呈现一只具有长喙和喉囊的鹈鹕正在骑自行车，双脚踩在脚踏上；车架、两只车轮、车把、座椅和身体结构协调。设计简洁完整的海边骑行场景、配色和中文标题，用内联 SVG 绘制主体与背景、CSS 制作车轮和踩踏的循环动画。布局自适应，尊重 prefers-reduced-motion。只用 HTML、内联 SVG 和 CSS，不使用 JavaScript、外部图片、字体、网络资源、表单或 iframe。将文档控制在 1000～1500 个输出 token，少量复用 SVG 图形和 CSS 即可，不要增加大段文案、复杂纹理或额外装饰。只输出从 <!DOCTYPE html> 到 </html> 的完整 HTML 文档，不要 Markdown 代码围栏或解释。";
+const VISUAL_PROMPT: &str = "创建一个HTML，内容是SVG绘制一个鹈鹕骑自行车的2D动画，你不需要任何测试";
+const LOGIC_PROMPT: &str = "在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求） 苹果味 桃子味 西瓜味 圆形 7 9 8 五角星形 7 6 4";
 const VISUAL_MAXIMUM_BYTES: usize = 24 * 1024;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VisualRequest {
+pub struct ManualRequest {
     pub account_id: String,
     model: String,
     reasoning_effort: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct VisualEvidence {
+struct ManualEvidence {
     id: String,
     account_id: String,
     model: String,
@@ -103,11 +104,46 @@ struct VisualEvidence {
     prompt: String,
     status: String,
     error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assessment: Option<Value>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
-struct VisualHistory {
-    visual_tests: Vec<VisualEvidence>,
+struct ManualHistory {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    visual_tests: Vec<ManualEvidence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    logic_tests: Vec<ManualEvidence>,
+}
+
+#[derive(Clone, Copy)]
+pub enum ManualCase {
+    Visual,
+    Logic,
+}
+impl ManualCase {
+    fn namespace(self) -> &'static str {
+        match self {
+            Self::Visual => "visual",
+            Self::Logic => "logic",
+        }
+    }
+    fn prompt(self) -> &'static str {
+        match self {
+            Self::Visual => VISUAL_PROMPT,
+            Self::Logic => LOGIC_PROMPT,
+        }
+    }
+    fn tests(self, history: &mut ManualHistory) -> &mut Vec<ManualEvidence> {
+        match self {
+            Self::Visual => &mut history.visual_tests,
+            Self::Logic => &mut history.logic_tests,
+        }
+    }
+}
+
+fn manual_lease(lease: &str) -> bool {
+    lease.starts_with("visual:") || lease.starts_with("logic:")
 }
 
 fn visual_models(c: &Config) -> Vec<String> {
@@ -401,8 +437,11 @@ async fn prune_removed_accounts(host: &HostClient, c: &Config) -> Result<(), Plu
             }
             host::delete(host, &key, version).await?;
         }
-        if let Some((_, version)) = host::get_in::<VisualHistory>(host, "visual", &key).await? {
-            host::delete_in(host, "visual", &key, version).await?;
+        for namespace in ["visual", "logic"] {
+            if let Some((_, version)) = host::get_in::<ManualHistory>(host, namespace, &key).await?
+            {
+                host::delete_in(host, namespace, &key, version).await?;
+            }
         }
     }
     retained.sort();
@@ -494,8 +533,8 @@ pub async fn tick(
         return Ok(json!({"status":"no_due_account"}));
     };
     let now = host::now();
-    if s.quality.lease_id.starts_with("visual:") {
-        // A cancelled visual comparison never changes fingerprint evidence or quality.
+    if manual_lease(&s.quality.lease_id) {
+        // A cancelled manual comparison never changes fingerprint evidence or quality.
         s.quality.lease_id.clear();
         s.quality.lease_until_ms = 0;
     } else if !s.quality.lease_id.is_empty() {
@@ -685,13 +724,15 @@ fn classify(s: &Score, c: &Config) -> Verdict {
     }
 }
 
-pub async fn visual(
+pub async fn manual_test(
     host: &HostClient,
     c: &Config,
-    input: VisualRequest,
+    input: ManualRequest,
+    case: ManualCase,
     timeout: Duration,
 ) -> Result<Value, PluginFault> {
     let started = Instant::now();
+    let namespace = case.namespace();
     let id = &input.account_id;
     if !c.account_ids.contains(id) {
         return Err(fault("account_not_managed"));
@@ -699,7 +740,10 @@ pub async fn visual(
     if !visual_models(c).contains(&input.model)
         || !["low", "medium", "high"].contains(&input.reasoning_effort.as_str())
     {
-        return Err(fault("invalid_visual_model_or_effort"));
+        return Err(fault(match case {
+            ManualCase::Visual => "invalid_visual_model_or_effort",
+            ManualCase::Logic => "invalid_logic_model_or_effort",
+        }));
     }
     if !c.enabled {
         return Ok(json!({"status":"disabled","account_id":id}));
@@ -715,7 +759,7 @@ pub async fn visual(
         return Err(fault("account_not_available_in_probe_group"));
     }
     let key = host::account_key(id);
-    // Visual comparisons never migrate or reset fingerprint state for a new configuration.
+    // Manual comparisons never migrate or reset fingerprint state for a new configuration.
     let stored = host::get::<AccountState>(host, &key).await?;
     let version = stored.as_ref().map(|record| record.1);
     let mut state = stored.map(|record| record.0).unwrap_or(AccountState {
@@ -728,15 +772,12 @@ pub async fn visual(
         || state.quality.updated_at_ms > now
         // Only the fingerprint path may resolve an interrupted fingerprint lease.
         || (!state.quality.lease_id.is_empty()
-            && !state.quality.lease_id.starts_with("visual:"))
+            && !manual_lease(&state.quality.lease_id))
     {
         return Ok(json!({"status":"account_busy","account_id":id}));
     }
-    let old = host::get_in::<VisualHistory>(host, "visual", &key).await?;
-    let history_version = old.as_ref().map(|record| record.1);
-    let mut history = old.map(|record| record.0).unwrap_or_default();
     let lease = format!(
-        "visual:{now}:{}:{}",
+        "{namespace}:{now}:{}:{}",
         std::process::id(),
         version.unwrap_or(0)
     );
@@ -756,7 +797,7 @@ pub async fn visual(
             };
         }
     }
-    let payload = json!({"model":input.model,"input":[{"role":"user","content":[{"type":"input_text","text":VISUAL_PROMPT}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":input.reasoning_effort}});
+    let payload = json!({"model":input.model,"input":[{"role":"user","content":[{"type":"input_text","text":case.prompt()}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":input.reasoning_effort}});
     let result = execute_model(
         host,
         &r.probe_key_id,
@@ -768,20 +809,24 @@ pub async fn visual(
     )
     .await;
     let (request_id, output, error) = match result {
-        Ok((request_id, output)) => match visual_document(output) {
-            Ok(output) => (Some(request_id), Some(output), None),
-            Err(error) => (Some(request_id), None, Some(error)),
-        },
+        Ok((request_id, output)) => {
+            let error = if matches!(case, ManualCase::Visual) {
+                visual_document(&output).err()
+            } else {
+                None
+            };
+            (Some(request_id), Some(output), error)
+        }
         Err((request_id, error)) => (
             request_id,
             None,
-            Some(error.replace("model_timeout", "visual_timeout")),
+            Some(error.replace("model_timeout", &format!("{namespace}_timeout"))),
         ),
     };
     let finished = host::now();
-    let mut sample = VisualEvidence {
+    let mut sample = ManualEvidence {
         id: format!(
-            "visual-{:x}",
+            "{namespace}-{:x}",
             Sha256::digest(format!("{id}:{lease}").as_bytes())
         ),
         account_id: id.clone(),
@@ -792,7 +837,7 @@ pub async fn visual(
         duration_ms: started.elapsed().as_millis(),
         request_id,
         output,
-        prompt: VISUAL_PROMPT.into(),
+        prompt: case.prompt().into(),
         status: if error.is_none() {
             "completed"
         } else {
@@ -800,73 +845,249 @@ pub async fn visual(
         }
         .into(),
         error,
+        assessment: None,
     };
     if finished >= state.quality.lease_until_ms || finished < now {
-        sample.error = Some("expired_or_clock_shifted_visual".into());
+        sample.error = Some(format!("expired_or_clock_shifted_{namespace}"));
+        sample.output = None;
+    }
+    if matches!(case, ManualCase::Logic) {
+        sample.assessment = Some(logic_assessment(
+            sample.output.as_deref().filter(|_| sample.error.is_none()),
+        ));
     }
     if serde_json::to_vec(&sample)
-        .map_err(|_| fault("visual_encode"))?
+        .map_err(|_| fault("manual_evidence_encode"))?
         .len()
         > VISUAL_MAXIMUM_BYTES
     {
         sample.error = Some("output_too_large".into());
+        sample.output = None;
+        if matches!(case, ManualCase::Logic) {
+            sample.assessment = Some(logic_assessment(None));
+        }
     }
     if sample.error.is_some() {
         sample.status = "error".into();
-        sample.output = None;
     }
-    history.visual_tests.push(sample.clone());
-    let discard = history.visual_tests.len().saturating_sub(4);
-    history.visual_tests.drain(..discard);
-    let saved = host::put_in(host, "visual", &key, &history, history_version).await;
+    let saved = async {
+        // A review can update an older visual result while this request is running.
+        let old = host::get_in::<ManualHistory>(host, namespace, &key).await?;
+        let history_version = old.as_ref().map(|record| record.1);
+        let mut history = old.map(|record| record.0).unwrap_or_default();
+        let tests = case.tests(&mut history);
+        tests.push(sample.clone());
+        let discard = tests.len().saturating_sub(4);
+        tests.drain(..discard);
+        host::put_in(host, namespace, &key, &history, history_version).await
+    }
+    .await;
     state.quality.lease_id.clear();
     state.quality.lease_until_ms = 0;
     // Release even if saving evidence failed; CAS never overwrites a replacement worker.
     let released = host::put(host, &key, &state, Some(claimed)).await;
     saved?;
     released?;
-    Ok(json!({"status":"visual_recorded","account_id":id,"visual_sample":sample}))
+    Ok(
+        json!({"status":format!("{namespace}_recorded"),"account_id":id,(format!("{namespace}_sample")):sample}),
+    )
 }
 
-fn visual_document(output: String) -> Result<String, String> {
-    let raw = output.trim();
-    let document = if let Some((marker, body)) = raw.split_once('\n')
-        && matches!(marker.trim(), "```html" | "```HTML" | "```")
-    {
-        body.trim()
-            .strip_suffix("```")
-            .ok_or("incomplete_html_document")?
-            .trim()
-    } else {
-        raw
-    };
-    let html = document.to_ascii_lowercase();
-    if !(html.starts_with("<!doctype html>") || html.starts_with("<html"))
-        || !html.contains("<html")
-        || !html.contains("<head")
-        || !html.contains("</head>")
-        || !html.contains("<body")
-        || !html.contains("</body>")
-        || !html.ends_with("</html>")
+fn visual_document(output: &str) -> Result<(), String> {
+    let html = output.to_ascii_lowercase();
+    let opens: Vec<_> = html
+        .match_indices("<html")
+        .filter(|(at, _)| {
+            html.as_bytes()
+                .get(at + 5)
+                .is_some_and(|c| c.is_ascii_whitespace() || *c == b'>')
+        })
+        .map(|(at, _)| at)
+        .collect();
+    let closes: Vec<_> = html.match_indices("</html>").map(|(at, _)| at).collect();
+    if opens.len() != 1 || closes.len() != 1 || opens[0] >= closes[0] {
+        return Err("incomplete_html_document".into());
+    }
+    let document = &html[opens[0]..closes[0]];
+    let tags: Option<Vec<_>> = ["<head", "</head>", "<body", "</body>"]
+        .iter()
+        .map(|tag| document.find(tag))
+        .collect();
+    if tags.is_none_or(|tags| !tags.windows(2).all(|pair| pair[0] < pair[1]))
+        || ![0, 2].contains(&output.matches("```").count())
     {
         return Err("incomplete_html_document".into());
     }
-    Ok(output)
+    Ok(())
 }
 
-pub async fn visual_evidence(
+fn logic_assessment(output: Option<&str>) -> Value {
+    let answer = output.and_then(logic_answer);
+    json!({
+        "verdict":match answer { Some(21) => "pass", Some(_) => "fail", None => "unknown" },
+        "expected_answer":21,
+        "answer":answer,
+        "note":match answer {
+            Some(21) => "明确结论为 21，逻辑测试通过。",
+            Some(_) => "明确结论不是 21，逻辑测试未通过，疑似降智；不用于确认真实模型或自动冷却。",
+            None => "请求失败、没有明确最终答案或结论冲突，无法判定。",
+        }
+    })
+}
+
+fn logic_answer(output: &str) -> Option<u64> {
+    // Accept an explicit conclusion, never a number merely appearing in the reasoning.
+    let clean = output
+        .replace(['*', '$', '#'], "")
+        .replace("\\boxed{", "")
+        .replace('}', "");
+    let clean = clean.trim();
+    if let Some(answer) = answer_number(clean) {
+        return Some(answer);
+    }
+    let mut answers = BTreeSet::new();
+    if let Some(last) = clean.lines().last().and_then(answer_number) {
+        answers.insert(last);
+    }
+    for sentence in clean.split(['\n', '。', '！', ';', '；', '，', ',']) {
+        let sentence = sentence.trim();
+        if sentence.contains(['?', '？'])
+            || ["如果", "假设", "若", "并非", "不是", "不确定"]
+                .iter()
+                .any(|term| sentence.contains(term))
+        {
+            continue;
+        }
+        for marker in [
+            "最终答案",
+            "最后答案",
+            "答案",
+            "结论",
+            "最少需要取出",
+            "最少需要摸出",
+            "至少需要取出",
+            "至少需要摸出",
+            "最少取出",
+            "最少摸出",
+            "最少需要",
+            "最少要取出",
+            "最少要摸出",
+            "最少要摸",
+            "最少要取",
+        ] {
+            for (at, _) in sentence.match_indices(marker) {
+                let tail = &sentence[at + marker.len()..];
+                let tail = tail
+                    .trim_start_matches([' ', '：', ':', '，', ','])
+                    .trim_start_matches("应该")
+                    .trim_start_matches("应当")
+                    .trim_start_matches("应")
+                    .trim_start_matches("就是")
+                    .trim_start_matches("是")
+                    .trim_start_matches("为")
+                    .trim_start_matches([' ', '：', ':'])
+                    .split(['，', ','])
+                    .next()
+                    .unwrap_or_default()
+                    .trim();
+                if let Some(answer) = answer_number(tail) {
+                    answers.insert(answer);
+                }
+            }
+        }
+    }
+    if answers.len() == 1 {
+        answers.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn answer_number(text: &str) -> Option<u64> {
+    let text = text.trim().trim_end_matches(['.', '。', '!', '！']);
+    let text = ["个糖果", "颗糖果", "个", "颗"]
+        .into_iter()
+        .find_map(|suffix| text.strip_suffix(suffix))
+        .unwrap_or(text)
+        .trim();
+    if !text.is_empty() && text.bytes().all(|c| c.is_ascii_digit()) {
+        return text.parse().ok();
+    }
+    let digit = |s: &str| {
+        ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
+            .iter()
+            .position(|value| *value == s)
+            .map(|v| v as u64)
+    };
+    if let Some((tens, ones)) = text.split_once('十') {
+        let tens = if tens.is_empty() { 1 } else { digit(tens)? };
+        let ones = if ones.is_empty() { 0 } else { digit(ones)? };
+        return Some(tens * 10 + ones);
+    }
+    digit(text)
+}
+
+pub async fn manual_evidence(
     host: &HostClient,
     c: &Config,
     account: &str,
+    case: ManualCase,
 ) -> Result<Value, PluginFault> {
     if !c.account_ids.iter().any(|id| id == account) {
         return Err(fault("account_not_managed"));
     }
-    let history = host::get_in::<VisualHistory>(host, "visual", &host::account_key(account))
+    let mut history =
+        host::get_in::<ManualHistory>(host, case.namespace(), &host::account_key(account))
+            .await?
+            .map(|record| record.0)
+            .unwrap_or_default();
+    Ok(
+        json!({"account_id":account,(format!("{}_tests",case.namespace())):case.tests(&mut history)}),
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisualReview {
+    account_id: String,
+    sample_id: String,
+    verdict: String,
+}
+
+pub async fn visual_review(
+    host: &HostClient,
+    c: &Config,
+    input: VisualReview,
+) -> Result<Value, PluginFault> {
+    if !c.account_ids.contains(&input.account_id) {
+        return Err(fault("account_not_managed"));
+    }
+    if !["pass", "fail"].contains(&input.verdict.as_str()) {
+        return Err(fault("invalid_visual_review"));
+    }
+    let key = host::account_key(&input.account_id);
+    let (mut history, version) = host::get_in::<ManualHistory>(host, "visual", &key)
         .await?
-        .map(|record| record.0)
-        .unwrap_or_default();
-    Ok(json!({"account_id":account,"visual_tests":history.visual_tests}))
+        .ok_or_else(|| fault("visual_sample_not_found"))?;
+    let sample = history
+        .visual_tests
+        .iter_mut()
+        .find(|sample| sample.id == input.sample_id)
+        .ok_or_else(|| fault("visual_sample_not_found"))?;
+    if sample.status != "completed" || sample.output.is_none() {
+        return Err(fault("visual_sample_not_completed"));
+    }
+    sample.assessment = Some(json!({"verdict":input.verdict,"source":"manual"}));
+    let sample = sample.clone();
+    if serde_json::to_vec(&sample)
+        .map_err(|_| fault("manual_evidence_encode"))?
+        .len()
+        > VISUAL_MAXIMUM_BYTES
+    {
+        return Err(fault("visual_review_too_large"));
+    }
+    host::put_in(host, "visual", &key, &history, Some(version)).await?;
+    Ok(json!({"status":"visual_reviewed","account_id":input.account_id,"visual_sample":sample}))
 }
 
 async fn execute(
@@ -1097,7 +1318,11 @@ fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
 }
 #[cfg(test)]
 fn visual_output(batch: ModelEventBatch) -> Result<String, String> {
-    visual_document(bounded_output(batch, VISUAL_MAXIMUM_BYTES)?)
+    {
+        let output = bounded_output(batch, VISUAL_MAXIMUM_BYTES)?;
+        visual_document(&output)?;
+        Ok(output)
+    }
 }
 
 fn bad_wire(data: &Value) -> bool {
@@ -1140,14 +1365,20 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
     for id in &c.account_ids {
         let (s, _) = load(host, id, c).await?;
         let account = accounts.iter().find(|a| a.account_id == *id);
-        let mut visual = visual_evidence(host, c, id).await?;
-        for sample in visual["visual_tests"].as_array_mut().into_iter().flatten() {
+        let mut visual = manual_evidence(host, c, id, ManualCase::Visual).await?;
+        let mut logic = manual_evidence(host, c, id, ManualCase::Logic).await?;
+        for sample in visual["visual_tests"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+            .chain(logic["logic_tests"].as_array_mut().into_iter().flatten())
+        {
             if let Some(sample) = sample.as_object_mut() {
                 sample.remove("output");
                 sample.remove("prompt");
             }
         }
-        records.push(json!({"visual_tests":visual["visual_tests"],"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"batch":batch_summary(s.batch.as_ref()),"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
+        records.push(json!({"visual_tests":visual["visual_tests"],"logic_tests":logic["logic_tests"],"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"batch":batch_summary(s.batch.as_ref()),"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
     }
     let scope_ok = if let Some(r) = &r {
         check_keys(host, r, c).await.is_ok()
@@ -1295,6 +1526,8 @@ mod tests {
             html.to_string(),
             format!("```html\n{html}\n```"),
             format!("```\r\n{html}\r\n```"),
+            format!("以下是完整页面：\n```html\n{html}\n```\n保存后打开即可。"),
+            format!("完整页面：\n{html}\n说明：用 SVG 绘制。"),
         ] {
             assert_eq!(
                 visual_output(events(&raw, FinishReason::Stop)).unwrap(),
@@ -1305,6 +1538,8 @@ mod tests {
             "<svg></svg>",
             "<!doctype html><html><head></head><body>",
             "```html\n<html><head></head><body></body></html>",
+            "<html><head></head><body></body></html><html><head></head><body></body></html>",
+            "<html><body></body><head></head></html>",
         ] {
             assert_eq!(
                 visual_output(events(raw, FinishReason::Stop)).unwrap_err(),
@@ -1323,5 +1558,33 @@ mod tests {
             .unwrap_err(),
             "output_too_large"
         );
+    }
+    #[test]
+    fn logic_judgment_requires_an_unambiguous_explicit_final_answer() {
+        for (output, expected) in [
+            ("21", Some(21)),
+            ("21 个糖果", Some(21)),
+            ("最终答案：**21**。", Some(21)),
+            ("因此，最少需要取出 **21 个糖果**，才能保证。", Some(21)),
+            ("答案是：21个。", Some(21)),
+            ("答案是 $\\boxed{21}$。", Some(21)),
+            ("最终答案是 33。", Some(33)),
+            ("推导中出现 21，但暂时无法得出结论。", None),
+            ("如果答案是 21，那么可以尝试证明。", None),
+            ("答案不是 21。", None),
+            ("答案是 21。最终答案是 33。", None),
+            ("答案是 21 或 33。", None),
+            ("不是21，最终答案是29。", Some(29)),
+            ("推导中使用29作为反例，最终答案是21。", Some(21)),
+            ("二十一", Some(21)),
+            ("答案：二十一颗", Some(21)),
+            ("答案：三十三个", Some(33)),
+            ("最少取出多少个糖果？21 是否正确？", None),
+        ] {
+            assert_eq!(logic_answer(output), expected, "{output}");
+        }
+        assert_eq!(logic_assessment(Some("答案是21"))["verdict"], "pass");
+        assert_eq!(logic_assessment(Some("答案是33"))["verdict"], "fail");
+        assert_eq!(logic_assessment(None)["verdict"], "unknown");
     }
 }

@@ -3,8 +3,8 @@
   "name": "quality-guard",
   "displayName": "模型质量守护",
   "publisher": "jiahao6635",
-  "version": "0.5.2",
-  "description": "按账号进行三题 ModelTrace 指纹与鹈鹕可视化测试，连续指纹异常后冷却，复测通过后恢复。",
+  "version": "0.6.0",
+  "description": "按账号进行三题 ModelTrace 指纹、鹈鹕绘图与糖果逻辑测试，连续指纹异常后冷却，复测通过后恢复。",
   "license": "MIT",
   "author": "jiahao6635",
   "engines": {
@@ -165,6 +165,17 @@
     },
     {
       "namespace": "visual",
+      "schemaVersion": 1,
+      "schema": {
+        "type": "object"
+      },
+      "maximumRecords": 4096,
+      "maximumBytes": 16777216,
+      "maximumValueBytes": 131072,
+      "migratesFrom": []
+    },
+    {
+      "namespace": "logic",
       "schemaVersion": 1,
       "schema": {
         "type": "object"

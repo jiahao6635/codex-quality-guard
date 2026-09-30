@@ -15,10 +15,11 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);bo
   <div class="account-select"><div class="field"><label for="account">检测账号</label><select id="account"><option value="">正在读取账号…</option></select></div><div id="budget" class="budget"></div></div>
   <div id="identity" class="identity"></div>
  </section>
- <nav class="mode-bar" aria-label="检测方式"><div class="modes"><button id="mode-fingerprint" type="button" aria-pressed="true">ModelTrace 三题指纹</button><button id="mode-visual" type="button" aria-pressed="false">鹈鹕可视化测试</button></div><div id="mode-hint" class="mode-hint"></div></nav>
- <section id="visual-controls" class="panel visual-controls" aria-label="可视化测试参数" hidden><div class="field"><label for="visual-model">请求模型</label><select id="visual-model"></select></div><div class="field"><label for="visual-effort">推理强度</label><select id="visual-effort"><option value="low" selected>low · 低</option><option value="medium">medium · 中</option><option value="high">high · 高</option></select></div><div class="field"><label for="visual-count">串行生成份数</label><select id="visual-count"><option value="1" selected>1 份</option><option value="2">2 份 · 并排对比</option><option value="3">3 份</option><option value="4">4 份</option></select></div></section>
+ <nav class="mode-bar" aria-label="检测方式"><div class="modes"><button id="mode-fingerprint" type="button" aria-pressed="true">ModelTrace 三题指纹</button><button id="mode-visual" type="button" aria-pressed="false">鹈鹕可视化测试</button><button id="mode-logic" type="button" aria-pressed="false">糖果逻辑测试</button></div><div id="mode-hint" class="mode-hint"></div></nav>
+ <section id="visual-controls" class="panel visual-controls" aria-label="测试参数" hidden><div class="field"><label for="visual-model">请求模型</label><select id="visual-model"></select></div><div class="field"><label for="visual-effort">推理强度</label><select id="visual-effort"><option value="low">low · 低</option><option value="medium" selected>medium · 中</option><option value="high">high · 高</option></select></div><div class="field"><label for="visual-count">串行生成份数</label><select id="visual-count"><option value="1" selected>1 份</option><option value="2">2 份 · 并排对比</option><option value="3">3 份</option><option value="4">4 份</option></select></div></section>
  <div class="intro"><div><h2 id="work-title">三次挑战，一轮模型归因</h2><p id="work-description"></p></div><span id="work-status" class="pill neutral">等待检测</span></div>
  <div id="notice" class="notice" role="status" aria-live="polite">正在读取探针结果…</div>
+ <details id="case-prompt" class="panel history" hidden><summary>查看本次测试的完整提示词</summary><pre id="case-prompt-text"></pre></details>
  <div id="progress" class="progress"></div>
  <section id="score" class="panel result" aria-label="本轮模型归因" hidden></section>
  <div id="evidence-tools" class="evidence-tools"></div>
@@ -37,16 +38,20 @@ const phases={pending:'待准入',healthy:'正常',suspect:'疑似异常',coolin
 const verdicts={healthy:'行为符合预期',anomaly:'行为异常',unknown:'无法判定'};
 const errors={
  model_event_buffer_too_large:'流式中间事件超过缓存上限，本次未保存完整输出',model_stream_cleanup_pending:'正在等待宿主完成取消收尾',model_stream_close_failed:'宿主未确认模型流关闭',
- probe_timeout:'等待完整响应超时',visual_timeout:'可视化生成超时，未取得完整 HTML',upstream_or_host_execution_failed:'上游或宿主执行失败',
+ probe_timeout:'等待完整响应超时',logic_timeout:'逻辑测试超时，无法判定',visual_timeout:'可视化生成超时，未取得完整 HTML',upstream_or_host_execution_failed:'上游或宿主执行失败',
  invalid_or_unscorable_output:'输出格式不符合指纹要求',wire_error_or_incomplete:'上游响应错误或未完整结束',insufficient_valid_answers:'六次尝试后仍未收齐三份有效输出',fingerprint_batch_expired:'本轮超过30分钟，证据已过期',
- incomplete_html_document:'模型未返回完整 HTML 文档，请重新测试',expired_or_clock_shifted_visual:'本次可视化执行已过期或服务器时间发生变化',output_too_large:'输出超过保存大小限制，未保留截断内容',
+ incomplete_html_document:'模型未返回完整 HTML 文档，请重新测试',expired_or_clock_shifted_visual:'本次可视化执行已过期或服务器时间发生变化',expired_or_clock_shifted_logic:'本次逻辑执行已过期或服务器时间发生变化',output_too_large:'输出超过保存大小限制，未保留截断内容',
  request_encode:'模型请求编码失败',invalid_model_metadata:'宿主返回的模型请求信息无法解析',invalid_event_batch:'模型响应事件无法解析',event_count_mismatch:'模型响应事件数量不一致',
- invalid_wire_json:'上游返回的 JSON 无法解析',invalid_wire_sse:'上游返回的事件流编码无效',unvalidated_wire_body:'上游响应格式无法校验',non_text_response:'模型返回了工具调用或非文本内容，无法作为完整 HTML',
+ invalid_wire_json:'上游返回的 JSON 无法解析',invalid_wire_sse:'上游返回的事件流编码无效',unvalidated_wire_body:'上游响应格式无法校验',non_text_response:'模型返回了工具调用或非文本内容，无法作为完整文本证据',
  ambiguous_output:'模型结束响应后仍返回内容，无法确认完整输出',incomplete_or_duplicate_completion:'模型响应未正常结束或出现重复完成事件',missing_completed_text:'未收到完整的文本响应',invalid_output_encoding:'模型输出编码无效'
 };
 const stoppedLabels={daily_budget_exhausted:'今日探针预算已用尽，已保存的证据仍可查看。',no_due_account:'账号未到复测时间或不在可探测范围，未发起请求。',disabled:'插件配置未启用。',fingerprint_batch_expired:'本轮超过30分钟，证据已过期；到期后可开始新一轮。'};
 let snapshot=null,busy=false,running=false,stopRequested=false,selectedId='',mode='fingerprint',active=null,clock=null;
-const visualResults=new Map();
+const visualResults=new Map(),logicResults=new Map();
+const caseLabels={visual:'可视化',logic:'糖果逻辑'};
+const casePrompts={visual:'创建一个HTML，内容是SVG绘制一个鹈鹕骑自行车的2D动画，你不需要任何测试',logic:'在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求） 苹果味 桃子味 西瓜味 圆形 7 9 8 五角星形 7 6 4'};
+function caseResults(kind=mode){return kind==='logic'?logicResults:visualResults;}
+function assessmentLabel(attempt,kind){const verdict=attempt.assessment?.verdict;return verdict==='pass'?'通过':verdict==='fail'?'未通过／疑似降智':kind==='visual'&&attempt.status==='completed'&&!attempt.error?'待人工判定':'无法判定';}
 function text(tag,value,cls){const e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e;}
 function date(ms){return ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}):'—';}
 function timeoutSeconds(){return Math.floor((snapshot?.visual_timeout_ms||110000)/1000);}
@@ -69,7 +74,7 @@ async function request(method,path,body){
 }
 function preserveEvidence(next){
  for(const a of next.accounts||[]){const old=snapshot?.accounts.find(x=>x.account_id===a.account_id);
-  if(!running){const cached=visualResults.get(a.account_id)||[];visualResults.set(a.account_id,(a.visual_tests||[]).map(v=>{const full=cached.find(c=>c.id===v.id);return full?{...v,...full}:v;}));}
+  if(!running)for(const kind of ['visual','logic']){const cache=caseResults(kind),cached=cache.get(a.account_id)||[];cache.set(a.account_id,(a[kind+'_tests']||[]).map(v=>{const full=cached.find(c=>c.id===v.id);return full?{...full,...v}:v;}));}
   if(old?.batch?.started_at_ms===a.batch?.started_at_ms&&a.batch){
    for(const item of a.batch.attempts){const previous=old.batch.attempts.find(p=>p.challenge_id===item.challenge_id&&p.at_ms===item.at_ms);if(previous){if(Object.hasOwn(previous,'prompt'))item.prompt=previous.prompt;if(Object.hasOwn(previous,'output'))item.output=previous.output;}}
   }
@@ -114,24 +119,33 @@ function copyExport(){
  const field=$('export-content');field.focus();field.select();
  try{if(!document.execCommand('copy'))throw new Error('copy denied');$('export-note').textContent='已复制，可在本地粘贴保存。';}catch{$('export-note').textContent='请按 Ctrl+C（Mac：⌘C）复制已选中的内容。';}
 }
-function evidenceFile(account,attempt,index,visual=false){return {type:visual?'pelican_visual':'modeltrace_challenge',account_id:account.account_id,email:account.email,name:account.name,model:visual?attempt.model:account.batch?.model,index,...attempt};}
-function outputCard(account,attempt,index,visual=false){
- const card=text('article','','panel output-card'),head=text('div','','output-head'),titleBox=text('div','','output-title');titleBox.append(text('span',String(index),'number'),text('h3',visual?'输出 '+index:'挑战输出 '+index));
- const actions=text('div','','output-title');actions.append(text('span',attempt.error?'未完成':visual?'完成':'有效输出',attempt.error?'status-text error-text':'status-text'));
- const save=text('button',visual?'导出 JSON':'↑ 导出','small');save.type='button';save.disabled=!Object.hasOwn(attempt,'output');save.onclick=()=>exportResult(evidenceFile(account,attempt,index,visual),'quality-'+account.account_id+'-'+(visual?'visual':'fingerprint')+'-'+index+'.json');actions.append(save);
- if(visual){const html=text('button','导出 HTML','small');html.type='button';html.disabled=!attempt.output;html.onclick=()=>exportResult(htmlDocument(attempt.output),'quality-'+account.account_id+'-visual-'+index+'.html');actions.append(html);}
+function evidenceFile(account,attempt,index,kind='fingerprint'){return {type:kind==='visual'?'pelican_visual':kind==='logic'?'candy_logic':'modeltrace_challenge',account_id:account.account_id,email:account.email,name:account.name,model:kind!=='fingerprint'?attempt.model:account.batch?.model,index,...attempt};}
+function outputCard(account,attempt,index,kind='fingerprint'){
+ const manual=kind!=='fingerprint',visual=kind==='visual',completed=attempt.status==='completed'&&!attempt.error;
+ const card=text('article','','panel output-card'),head=text('div','','output-head'),titleBox=text('div','','output-title');titleBox.append(text('span',String(index),'number'),text('h3',manual?'输出 '+index:'挑战输出 '+index));
+ const actions=text('div','','output-title');actions.append(text('span',manual?assessmentLabel(attempt,kind):attempt.error?'未完成':'有效输出',attempt.error||attempt.assessment?.verdict==='fail'?'status-text error-text':'status-text'));
+ const save=text('button',manual?'导出 JSON':'↑ 导出','small');save.type='button';save.disabled=!Object.hasOwn(attempt,'output');save.onclick=()=>exportResult(evidenceFile(account,attempt,index,kind),'quality-'+account.account_id+'-'+kind+'-'+index+'.json');actions.append(save);
+ if(visual){const html=text('button','导出 HTML','small');html.type='button';html.disabled=!completed||!attempt.output;html.onclick=()=>exportResult(htmlDocument(attempt.output),'quality-'+account.account_id+'-visual-'+index+'.html');actions.append(html);}
  head.append(titleBox,actions);card.append(head);
- const meta=text('div','','output-meta');meta.append(text('span',visual?(attempt.model+' / '+attempt.reasoning_effort):'数字 '+(attempt.number_count??'—')+' / 要求 '+attempt.expected_count),text('span',Number.isFinite(attempt.duration_ms)?'耗时 '+seconds(attempt.duration_ms):date(attempt.at_ms||attempt.started_at_ms)));card.append(meta);
- if(visual&&attempt.output){
-  const preview=document.createElement('img');preview.className='preview';preview.alt='账号 '+accountLabel(account)+' 的鹈鹕可视化输出 '+index;preview.src=previewImage(attempt.output);card.append(preview,text('div','安全图像预览 · 支持 HTML、SVG 与 CSS；脚本和外部资源不会执行。','preview-note'));
+ const meta=text('div','','output-meta');meta.append(text('span',manual?(attempt.model+' / '+attempt.reasoning_effort):'数字 '+(attempt.number_count??'—')+' / 要求 '+attempt.expected_count),text('span',Number.isFinite(attempt.duration_ms)?'耗时 '+seconds(attempt.duration_ms):date(attempt.at_ms||attempt.started_at_ms)));card.append(meta);
+ if(visual&&completed&&attempt.output){
+  const preview=document.createElement('img');preview.className='preview';preview.alt='账号 '+accountLabel(account)+' 的鹈鹕可视化输出 '+index;preview.src=previewImage(attempt.output);card.append(preview,text('div','安全图像预览不执行 JavaScript 和外部资源；如动画依赖脚本，请导出完整 HTML 后再判断绘图是否正常。','preview-note'));
  }
- if(attempt.error){const message=text('div','','output-body');message.append(text('p',errorLabel(attempt.error),'error-text'));card.append(message);}
+ if(manual){const review=text('div','','output-body');
+  if(visual&&completed){review.append(text('p','人工判断绘图效果：'));
+   for(const [verdict,label] of [['pass','绘图正常'],['fail','绘图异常／疑似降智']]){const button=text('button',label,'small');button.type='button';button.disabled=busy||!attempt.output;button.setAttribute('aria-pressed',String(attempt.assessment?.verdict===verdict));button.onclick=()=>reviewVisual(account,attempt,verdict);review.append(button);}
+  }else if(kind==='logic'){review.append(text('p','标准答案：21 · 识别答案：'+(attempt.assessment?.answer??'未识别')));if(attempt.assessment?.note)review.append(text('p',attempt.assessment.note));}
+  if(attempt.error)review.append(text('p',errorLabel(attempt.error),'error-text'));card.append(review);
+ }else if(attempt.error){const message=text('div','','output-body');message.append(text('p',errorLabel(attempt.error),'error-text'));card.append(message);}
  const source=document.createElement('details');source.className='source';source.open=true;source.append(text('summary',visual?'完整生成源码':'完整模型输出'),text('pre',Object.hasOwn(attempt,'output')?(attempt.output??'未取得完整输出'):'原文尚未加载。点击上方“加载完整证据”查看。'));card.append(source);
- const more=text('div','','output-body'),input=document.createElement('details');input.append(text('summary','查看挑战提示词与请求信息'),facts([['账号 ID',account.account_id],['请求 ID',attempt.request_id||'未返回'],['生成时间',date(attempt.at_ms||attempt.started_at_ms)],['挑战 ID',attempt.challenge_id||'鹈鹕可视化']]));input.append(text('pre',Object.hasOwn(attempt,'prompt')?attempt.prompt:'提示词尚未加载','prompt'));more.append(input);card.append(more);return card;
+ const more=text('div','','output-body'),input=document.createElement('details');input.append(text('summary','查看挑战提示词与请求信息'),facts([['账号 ID',account.account_id],['请求 ID',attempt.request_id||'未返回'],['生成时间',date(attempt.at_ms||attempt.started_at_ms)],['挑战 ID',attempt.challenge_id||(visual?'鹈鹕可视化':'糖果逻辑')]]));input.append(text('pre',Object.hasOwn(attempt,'prompt')?attempt.prompt:'提示词尚未加载','prompt'));more.append(input);card.append(more);return card;
 }
 function htmlDocument(output){
- const raw=output.trim(),fenced=raw.match(/^```(?:html)?[ \t]*\r?\n([\s\S]*)```$/i);
- return fenced?fenced[1].trim():raw;
+ const raw=output.trim(),fences=raw.match(/```/g)||[];
+ if(fences.length&&fences.length!==2)return raw;
+ const fenced=raw.match(/```(?:html)?[ \t]*\r?\n([\s\S]*?)```/i),content=fenced?fenced[1].trim():raw;
+ const document=content.match(/(?:<!doctype html[^>]*>\s*)?<html\b[^>]*>[\s\S]*?<\/html\s*>/i);
+ return document&&(content.match(/<html\b/gi)||[]).length===1?document[0]:raw;
 }
 function previewImage(output){
  const doc=new DOMParser().parseFromString(htmlDocument(output),'text/html');
@@ -157,27 +171,29 @@ function renderFingerprint(account){
  if(batch?.error)$('extra-results').append(text('p',errorLabel(batch.error),'error-text'));
  $('footnote').textContent='三份有效完整输出才生成一轮结果，每轮最多尝试六次。超时与无效输出不会判为降智；冷却与恢复依照已配置的复测策略。原文保留最近一轮，历史保留最近 12 条摘要。';
 }
-function renderVisual(account){
- const results=visualResults.get(account?.account_id)||[],counts=visualCounts(results);
- $('work-title').textContent='鹈鹕骑自行车 · 可视化能力对比';$('work-description').textContent='使用相同绘图任务观察构图、细节和代码完成度。每份输出固定请求所选账号；可视化结果供人工比较，不用于自动模型归因或账号冷却。';
- $('work-status').textContent=results.length?results.length+' 份结果 · 成功 '+counts.completed+' / 失败 '+counts.failed:'等待生成';$('progress').hidden=true;$('score').hidden=true;
- const count=running&&active?.mode==='visual'?active.total:Number($('visual-count').value||1),displayCount=Math.max(results.length,count);
- for(let i=0;i<displayCount;i++)$('outputs').append(results[i]?outputCard(account,results[i],i+1,true):placeholder('输出 '+(i+1),'生成包含鹈鹕、自行车与海岸场景的独立 HTML，支持安全预览与完整原文导出。',i+1,running&&i===results.length));
- if(results.length){$('evidence-tools').append(text('p','最近 '+results.length+' 份结果 · '+(running?'正在串行生成':'已保存在服务端，可导出完整提示词、源码和请求信息')));if(results.some(a=>!Object.hasOwn(a,'output'))){const load=text('button','加载完整可视化结果','small secondary');load.disabled=busy;load.onclick=()=>loadVisualEvidence(account);$('evidence-tools').append(load);}}
- $('footnote').textContent='预览禁用 JavaScript 与外部资源，保留 HTML、内联 SVG 和 CSS 动画。模型生成效果不等同于模型身份；如需模型归因，请使用三题指纹检测。';
+function renderManual(account){
+ const visual=mode==='visual',results=caseResults().get(account?.account_id)||[],counts=visualCounts(results);
+ $('work-title').textContent=visual?'鹈鹕骑自行车 · 绘图能力测试':'糖果数量 · 逻辑能力测试';
+ $('work-description').textContent=visual?'使用指定提示词生成 HTML / SVG 2D 动画，人工检查绘图是否正常；异常时可标记未通过／疑似降智。':'按原题发送糖果数量与形状条件。标准答案为 21（9 颗圆形＋12 颗五角星）；明确回答其他数量时标记未通过／疑似降智。';
+ $('work-status').textContent=results.length?results.length+' 份结果 · 完成 '+counts.completed+' / 未完成 '+counts.failed:'等待生成';$('progress').hidden=true;$('score').hidden=true;
+ const count=running&&active?.mode===mode?active.total:Number($('visual-count').value||1),displayCount=Math.max(results.length,count);
+ for(let i=0;i<displayCount;i++)$('outputs').append(results[i]?outputCard(account,results[i],i+1,mode):placeholder('输出 '+(i+1),visual?'生成鹈鹕骑自行车的 HTML / SVG 2D 动画，保留完整输出供人工判断。':'固定请求当前账号，保存完整解答并识别最终答案，与 21 比较。',i+1,running&&i===results.length));
+ if(results.length){$('evidence-tools').append(text('p','最近 '+results.length+' 份结果 · '+(running?'正在串行生成':'已保存在服务端，可导出完整提示词、输出和请求信息')));if(results.some(a=>!Object.hasOwn(a,'output'))){const load=text('button','加载完整'+caseLabels[mode]+'结果','small secondary');load.disabled=busy;load.onclick=()=>loadManualEvidence(account);$('evidence-tools').append(load);}}
+ $('footnote').textContent=(visual?'绘图效果由人工判定；图像预览不执行 JavaScript，不能据此判断依赖脚本的动画异常。':'超时、请求失败或没有明确最终答案时显示“无法判定”，不计为降智。')+' 单题结果不证明模型身份，也不直接触发账号冷却；自动冷却仍采用 ModelTrace 复测策略。';
 }
 function render(){
  if(!snapshot)return;refreshAccountPicker();const account=currentAccount(),usage=budgetUsage(),limits=snapshot.probe_limits||{};
  renderIdentity(account);$('budget').replaceChildren(text('strong',usage.attempts+' / '+limits.max_daily_attempts),text('span','今日已用请求 · UTC 日预算'));
- for(const key of ['fingerprint','visual']){$('mode-'+key).setAttribute('aria-pressed',String(mode===key));$('mode-'+key).disabled=busy;}
- $('visual-controls').hidden=mode!=='visual';for(const id of ['visual-model','visual-effort','visual-count'])$(id).disabled=busy;
- $('mode-hint').textContent=mode==='fingerprint'?'指纹目标：'+snapshot.model:'目测对比 · 不触发冷却';
+ for(const key of ['fingerprint','visual','logic']){$('mode-'+key).setAttribute('aria-pressed',String(mode===key));$('mode-'+key).disabled=busy;}
+ $('case-prompt').hidden=mode==='fingerprint';$('case-prompt-text').textContent=casePrompts[mode]||'';
+ $('visual-controls').hidden=mode==='fingerprint';for(const id of ['visual-model','visual-effort','visual-count'])$(id).disabled=busy;
+ $('mode-hint').textContent=mode==='fingerprint'?'指纹目标：'+snapshot.model:mode==='visual'?'人工判定绘图效果':'标准答案 21 · 自动判分';
  $('outputs').replaceChildren();$('extra-results').replaceChildren();$('evidence-tools').replaceChildren();
- if(mode==='fingerprint')renderFingerprint(account);else renderVisual(account);
+ if(mode==='fingerprint')renderFingerprint(account);else renderManual(account);
  if(!account){$('outputs').replaceChildren();const empty=text('div','','panel empty-state');empty.append(text('h3','先添加一个检测账号'),text('p','在插件设置中填写 account_ids，保存后刷新本页。'));$('extra-results').append(empty);}
- const history=account?.history||[];$('history-title').textContent='最近 '+history.length+' 条历史证据摘要';$('history-body').replaceChildren(text('pre',JSON.stringify(history.map(s=>({record_type:evidenceKind(s),...s})),null,2)));$('history').hidden=mode==='visual';
- const reason=unavailable(account,mode==='visual');$('start').disabled=busy||Boolean(reason);$('start').textContent=running?'检测进行中…':mode==='visual'?'▷ 开始可视化测试':account?.batch&&!account.batch.completed_at_ms?'▷ 继续本轮三题':'▷ 开始三题检测';
- $('refresh').disabled=busy;$('download-all').disabled=busy||!(mode==='visual'?(visualResults.get(selectedId)||[]).length:account?.batch?.attempts.length);$('stop').hidden=!running;$('stop').disabled=stopRequested;$('stop').textContent=stopRequested?'将于本题结束后停止':'本题结束后停止';
+ const history=account?.history||[];$('history-title').textContent='最近 '+history.length+' 条历史证据摘要';$('history-body').replaceChildren(text('pre',JSON.stringify(history.map(s=>({record_type:evidenceKind(s),...s})),null,2)));$('history').hidden=mode!=='fingerprint';
+ const reason=unavailable(account,mode!=='fingerprint');$('start').disabled=busy||Boolean(reason);$('start').textContent=running?'检测进行中…':mode!=='fingerprint'?'▷ 开始'+caseLabels[mode]+'测试':account?.batch&&!account.batch.completed_at_ms?'▷ 继续本轮三题':'▷ 开始三题检测';
+ $('refresh').disabled=busy;$('download-all').disabled=busy||!(mode!=='fingerprint'?(caseResults().get(selectedId)||[]).length:account?.batch?.attempts.length);$('stop').hidden=!running;$('stop').disabled=stopRequested;$('stop').textContent=stopRequested?'将于本题结束后停止':'本题结束后停止';
  $('action-caption').textContent=running?(stopRequested?'当前请求继续完成并保存，随后停止。':'请保持页面打开 · 当前请求已固定账号'):reason||(mode==='fingerprint'?'每题最多等待110秒，失败尝试同样计费。':'串行请求 '+$('visual-count').value+' 份输出，使用探针全局预算。');
  updateElapsed();
 }
@@ -186,7 +202,7 @@ function beginRun(account,kind,total){busy=true;running=true;stopRequested=false
 async function endRun(){clearInterval(clock);clock=null;active=null;running=false;try{preserveEvidence(await request('GET','status'));}catch(e){notice($('notice').textContent+'\n刷新失败：'+e.message);}busy=false;render();}
 async function refresh(){if(busy)return;busy=true;$('refresh').disabled=true;try{preserveEvidence(await request('GET','status'));populateVisualModels();notice('结果已更新：'+date(Date.now()));}catch(e){notice('读取失败：'+e.message);}finally{busy=false;if(snapshot)render();else $('refresh').disabled=false;}}
 function populateVisualModels(){
- const select=$('visual-model'),previous=select.value;select.replaceChildren();for(const name of snapshot.visual_models||[snapshot.model]){const option=text('option',name);option.value=name;select.append(option);}select.value=(snapshot.visual_models||[snapshot.model]).includes(previous)?previous:snapshot.model;
+ const select=$('visual-model'),previous=select.value;select.replaceChildren();for(const name of snapshot.visual_models||[snapshot.model]){const option=text('option',name);option.value=name;select.append(option);}const models=snapshot.visual_models||[snapshot.model];select.value=models.includes(previous)?previous:models.includes('gpt-6-astra')?'gpt-6-astra':snapshot.model;
 }
 async function loadEvidence(account){
  if(busy)return;busy=true;render();notice('正在读取 '+accountLabel(account)+' 的完整探针证据…');
@@ -209,37 +225,41 @@ async function probe(account){
  }catch(e){notice('检测中断：'+e.message+'。已保存的输出可在刷新后查看；核对执行状态后可继续本轮。');}
  finally{await endRun();}
 }
-async function visualProbe(account){
- if(busy)return;const model=$('visual-model').value,reasoning_effort=$('visual-effort').value,total=Number($('visual-count').value||1);
- beginRun(account,'visual',total);visualResults.set(account.account_id,[]);render();
+async function manualProbe(account){
+ if(busy)return;const kind=mode,cache=caseResults(kind),label=caseLabels[kind],model=$('visual-model').value,reasoning_effort=$('visual-effort').value,total=Number($('visual-count').value||1);
+ beginRun(account,kind,total);cache.set(account.account_id,[]);render();
  try{
   for(let i=0;i<total;i++){
-   active.started=Date.now();render();notice('正在为 '+accountLabel(account)+' 生成第 '+(i+1)+' / '+total+' 份可视化输出 · '+model+' / '+reasoning_effort+'。每份最多等待'+timeoutSeconds()+'秒。',true);
-   const r=await request('POST','visual',{account_id:account.account_id,model,reasoning_effort});
+   active.started=Date.now();render();notice('正在为 '+accountLabel(account)+' 生成第 '+(i+1)+' / '+total+' 份'+label+'输出 · '+model+' / '+reasoning_effort+'。每份最多等待'+timeoutSeconds()+'秒。',true);
+   const r=await request('POST',kind,{account_id:account.account_id,model,reasoning_effort});
    if(r.account_id&&r.account_id!==account.account_id)throw new Error('宿主返回的账号与本次目标不一致');
-   if(r.status!=='visual_recorded'){notice(stoppedLabels[r.status]||(r.status==='account_busy'?'该账号已有探针执行中，未发起额外请求。':r.status));break;}
-   if(!r.visual_sample||r.visual_sample.account_id!==account.account_id)throw new Error('可视化结果缺少目标账号信息');
-   visualResults.get(account.account_id).push(r.visual_sample);render();
-   const counts=visualCounts(visualResults.get(account.account_id)),summary='已完成 '+counts.completed+' / '+(i+1)+' 份'+(counts.failed?'，'+counts.failed+' 份失败':'');
+   if(r.status!==kind+'_recorded'){notice(stoppedLabels[r.status]||(r.status==='account_busy'?'该账号已有探针执行中，未发起额外请求。':r.status));break;}
+   const sample=r[kind+'_sample'];if(!sample||sample.account_id!==account.account_id)throw new Error('结果缺少目标账号信息');
+   cache.get(account.account_id).push(sample);render();
+   const counts=visualCounts(cache.get(account.account_id)),summary='已完成 '+counts.completed+' / '+(i+1)+' 份'+(counts.failed?'，'+counts.failed+' 份未完成':'');
    if(stopRequested){notice('已停止后续生成；'+summary+'。当前请求结果已保存。');break;}
-   if(i===total-1)notice('可视化测试结束：'+summary+'。'+(counts.failed?(counts.completed?'成功结果可查看预览；失败结果请查看错误信息。':'请在结果卡片查看失败原因。'):'可查看预览与完整源码进行人工比较。'));
+   if(i===total-1)notice(label+'测试结束：'+summary+'。'+(kind==='logic'?'最新判定：'+assessmentLabel(sample,kind)+'。':counts.failed?(counts.completed?'完整结果可查看预览；未完成结果请查看错误信息。':'请在结果卡片查看失败原因，无法判定绘图质量。'):'可查看预览与完整源码，标记绘图是否正常。'));
   }
- }catch(e){notice('可视化测试中断：'+e.message+'。可刷新后加载已保存的完整结果。');}
+ }catch(e){notice(label+'测试中断：'+e.message+'。可刷新后加载已保存的完整结果。');}
  finally{await endRun();}
 }
-async function loadVisualEvidence(account){
- if(busy)return;busy=true;render();notice('正在读取 '+accountLabel(account)+' 的完整可视化结果…');
- try{await fetchVisualEvidence(account);notice('完整可视化结果已加载；此次读取不发起模型请求。');}catch(e){notice('读取可视化结果失败：'+e.message);}finally{busy=false;render();}
+async function loadManualEvidence(account){
+ if(busy)return;busy=true;render();notice('正在读取 '+accountLabel(account)+' 的完整'+caseLabels[mode]+'结果…');
+ try{await fetchManualEvidence(account);notice('完整结果已加载；此次读取不发起模型请求。');}catch(e){notice('读取结果失败：'+e.message);}finally{busy=false;render();}
 }
-async function fetchVisualEvidence(account){const r=await request('POST','visual-evidence',{account_id:account.account_id});if(r.account_id!==account.account_id)throw new Error('结果账号不一致');visualResults.set(account.account_id,r.visual_tests||[]);return r;}
+async function fetchManualEvidence(account,kind=mode){const r=await request('POST',kind+'-evidence',{account_id:account.account_id});if(r.account_id!==account.account_id)throw new Error('结果账号不一致');caseResults(kind).set(account.account_id,r[kind+'_tests']||[]);return r;}
+async function reviewVisual(account,sample,verdict){
+ if(busy)return;busy=true;render();
+ try{const r=await request('POST','visual-review',{account_id:account.account_id,sample_id:sample.id,verdict});if(r.account_id!==account.account_id||r.visual_sample?.id!==sample.id)throw new Error('返回的判定与目标样本不一致');const results=visualResults.get(account.account_id)||[],index=results.findIndex(v=>v.id===sample.id);if(index>=0)results[index]=r.visual_sample;notice('人工判定已保存：'+assessmentLabel(r.visual_sample,'visual')+'。未发起模型请求。');}catch(e){notice('保存判定失败：'+e.message);}finally{busy=false;render();}
+}
 async function downloadAll(){
  const account=currentAccount();if(!account||busy)return;
- if(mode==='visual'){busy=true;render();try{const result=await fetchVisualEvidence(account);exportResult({type:'pelican_visual',email:account.email,name:account.name,...result},'quality-'+account.account_id+'-visual.json');}catch(e){notice('导出失败：'+e.message);}finally{busy=false;render();}return;}
+ if(mode!=='fingerprint'){busy=true;render();try{const result=await fetchManualEvidence(account);exportResult({type:mode==='visual'?'pelican_visual':'candy_logic',email:account.email,name:account.name,...result},'quality-'+account.account_id+'-'+mode+'.json');}catch(e){notice('导出失败：'+e.message);}finally{busy=false;render();}return;}
  busy=true;render();try{const evidence=await fetchEvidence(account);exportResult({type:'modeltrace_fingerprint',email:account.email,name:account.name,...evidence},'quality-'+account.account_id+'-fingerprint.json');notice('完整挑战、输出与归因结果已准备导出。');}catch(e){notice('导出失败：'+e.message);}finally{busy=false;render();}
 }
 $('refresh').onclick=refresh;$('account').onchange=()=>{selectedId=$('account').value;render();};
-for(const key of ['fingerprint','visual'])$('mode-'+key).onclick=()=>{if(busy)return;mode=key;render();};
-$('visual-count').onchange=()=>render();$('start').onclick=()=>{const account=currentAccount();if(account&&!unavailable(account,mode==='visual'))return mode==='visual'?visualProbe(account):probe(account);};
+for(const key of ['fingerprint','visual','logic'])$('mode-'+key).onclick=()=>{if(busy)return;mode=key;render();};
+$('visual-count').onchange=()=>render();$('start').onclick=()=>{const account=currentAccount();if(account&&!unavailable(account,mode!=='fingerprint'))return mode!=='fingerprint'?manualProbe(account):probe(account);};
 $('stop').onclick=()=>{stopRequested=true;render();};$('download-all').onclick=downloadAll;$('export-copy').onclick=copyExport;$('export-close').onclick=()=>$('export-dialog').close();
 window.addEventListener('codex-proxy-themechange',theme);theme();if(bridge)refresh();else notice('请从 CPS → 插件 → 扩展页打开此页面。');
 </script>

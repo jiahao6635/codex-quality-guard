@@ -35,6 +35,7 @@ struct FakeStore {
     fail_membership_change: bool,
     stale_membership_readback: bool,
     take_over_during_model: bool,
+    review_visual_during_model: bool,
     probe_budget_too_wide: bool,
     extra_account: bool,
     valid_model_output: bool,
@@ -64,18 +65,27 @@ impl FakeStore {
             serde_json::from_slice(payload).unwrap()
         };
         self.calls.push((method.to_owned(), data.clone()));
-        let state_key = if params["namespace"] == "visual" {
-            format!("visual:{}", params["key"].as_str().unwrap())
+        let state_key = if ["visual", "logic"].contains(&params["namespace"].as_str().unwrap_or(""))
+        {
+            format!(
+                "{}:{}",
+                params["namespace"].as_str().unwrap(),
+                params["key"].as_str().unwrap()
+            )
         } else {
             params["key"].as_str().unwrap_or("").to_owned()
         };
         let response = match method {
             "host.state.get" => {
-                assert!(["quality", "visual"].contains(&params["namespace"].as_str().unwrap()));
+                assert!(
+                    ["quality", "visual", "logic"].contains(&params["namespace"].as_str().unwrap())
+                );
                 return Ok((json!({"record": self.state.get(&state_key)}), vec![]));
             }
             "host.state.put" => {
-                assert!(["quality", "visual"].contains(&params["namespace"].as_str().unwrap()));
+                assert!(
+                    ["quality", "visual", "logic"].contains(&params["namespace"].as_str().unwrap())
+                );
                 let key = state_key;
                 let existing = self.state.get(&key).map(|record| record.version);
                 if existing != params["expected_version"].as_u64()
@@ -98,7 +108,9 @@ impl FakeStore {
                 return Ok((json!({"version": version}), vec![]));
             }
             "host.state.delete" => {
-                assert!(["quality", "visual"].contains(&params["namespace"].as_str().unwrap()));
+                assert!(
+                    ["quality", "visual", "logic"].contains(&params["namespace"].as_str().unwrap())
+                );
                 let key = state_key.as_str();
                 if let Some(record) = self.state.get(key)
                     && Some(record.version) != params["expected_version"].as_u64()
@@ -255,6 +267,16 @@ impl FakeStore {
                     record.version += 1;
                     record.value["quality"]["lease_id"] = json!("replacement-worker");
                     record.value["takeover_marker"] = json!("must-survive-late-response");
+                }
+                if self.review_visual_during_model {
+                    let key = format!(
+                        "visual:account.{:x}",
+                        Sha256::digest(params["account_id"].as_str().unwrap().as_bytes())
+                    );
+                    let record = self.state.get_mut(&key).unwrap();
+                    record.value["visual_tests"][0]["assessment"] =
+                        json!({"verdict":"fail","source":"manual"});
+                    record.version += 1;
                 }
                 let mut events = vec![
                     ExecutionEvent::canonical(CanonicalEvent::Started {
@@ -594,7 +616,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
     assert_eq!(
         registration["routes"],
         json!([{"method": "GET", "path": "status", "request_content_types": [],
-            "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
+            "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"logic", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"logic-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-review", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
     );
     assert!(
         store.calls.is_empty(),
@@ -1322,7 +1344,7 @@ async fn visual_comparisons_target_accounts_keep_four_results_and_share_budget_w
         failure["visual_sample"]["error"],
         "incomplete_html_document"
     );
-    assert!(failure["visual_sample"]["output"].is_null());
+    assert_eq!(failure["visual_sample"]["output"], "<svg>fragment</svg>");
     assert_eq!(store.state[&second_key].value, original_second);
     assert_eq!(store.state["budget"].value["attempts"], 7);
     assert_eq!(
@@ -1573,5 +1595,240 @@ async fn streamed_output_remains_bounded_and_requires_model_stop_and_host_end() 
         "model stop alone is not finalized host end"
     );
     assert_eq!(store.count("host.model.stream_close"), 3);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn logic_tests_and_visual_reviews_preserve_fingerprint_share_budget_and_keep_separate_evidence()
+ {
+    let mut c = config();
+    c.account_ids.push("acct_probe_2".into());
+    c.max_daily_attempts = 7;
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        extra_account: true,
+        valid_model_output: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    let first_key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    let second_key = format!("account.{:x}", Sha256::digest(b"acct_probe_2"));
+    let original_first = store.state[&first_key].value.clone();
+    let original_second = store.state[&second_key].value.clone();
+    let input =
+        json!({"account_id":"acct_probe_2","model":"gpt-6-astra","reasoning_effort":"medium"});
+    for patch in [
+        json!({"account_id":"unmanaged"}),
+        json!({"model":"arbitrary"}),
+        json!({"reasoning_effort":"unbounded"}),
+    ] {
+        let mut bad = input.clone();
+        bad.as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        assert!(
+            visual_request(&mut peer, &mut store, "logic", bad)
+                .await
+                .is_err()
+        );
+    }
+    let html = "以下是页面：\n```html\n<!DOCTYPE html><html><head></head><body><svg></svg></body></html>\n```\n保存后打开。";
+    store.visual_output = Some(html.into());
+    let visual = visual_request(&mut peer, &mut store, "visual", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(visual["visual_sample"]["status"], "completed");
+    assert_eq!(
+        visual["visual_sample"]["prompt"],
+        "创建一个HTML，内容是SVG绘制一个鹈鹕骑自行车的2D动画，你不需要任何测试"
+    );
+    assert!(visual["visual_sample"].get("assessment").is_none());
+    let visual_sample = visual["visual_sample"].clone();
+    for (output, verdict) in [
+        ("答案是21。", "pass"),
+        ("最终答案是33。", "fail"),
+        ("推导中出现21。", "unknown"),
+        ("答案是21。结论为29。", "unknown"),
+        ("最少需要取出21个糖果。", "pass"),
+    ] {
+        store.visual_output = Some(output.into());
+        let result = visual_request(&mut peer, &mut store, "logic", input.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["status"], "logic_recorded");
+        assert_eq!(result["logic_sample"]["status"], "completed");
+        assert_eq!(result["logic_sample"]["account_id"], "acct_probe_2");
+        assert_eq!(result["logic_sample"]["model"], "gpt-6-astra");
+        assert_eq!(result["logic_sample"]["reasoning_effort"], "medium");
+        assert_eq!(result["logic_sample"]["output"], output);
+        assert_eq!(result["logic_sample"]["assessment"]["verdict"], verdict);
+        assert_eq!(result["logic_sample"]["assessment"]["expected_answer"], 21);
+        assert_eq!(store.state[&first_key].value, original_first);
+        assert_eq!(store.state[&second_key].value, original_second);
+    }
+    let sent = store
+        .calls
+        .iter()
+        .rfind(|(method, _)| method == "host.model.execute_stream")
+        .unwrap();
+    assert_eq!(sent.1["reasoning"]["effort"], "medium");
+    assert_eq!(
+        sent.1["input"][0]["content"][0]["text"],
+        "在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。现已知不同口味的糖和不同形状的数量统计如下表。参赛者需要在活动前决定摸出的糖果数目，那么，最少取出多少个糖果才能保证手中同时拥有不同形状的苹果味和桃子味的糖？（同时手中有圆形苹果味匹配五角星桃子味糖果，或者有圆形桃子味匹配五角星苹果味糖果都满足要求） 苹果味 桃子味 西瓜味 圆形 7 9 8 五角星形 7 6 4"
+    );
+    assert_eq!(store.state["budget"].value["attempts"], 7);
+    let budget = store.state["budget"].value.clone();
+    let logic = visual_request(
+        &mut peer,
+        &mut store,
+        "logic-evidence",
+        json!({"account_id":"acct_probe_2"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(logic["logic_tests"].as_array().unwrap().len(), 4);
+    assert_eq!(logic["logic_tests"][0]["assessment"]["answer"], 33);
+    assert_eq!(
+        visual_request(
+            &mut peer,
+            &mut store,
+            "visual-evidence",
+            json!({"account_id":"acct_probe_2"})
+        )
+        .await
+        .unwrap()["visual_tests"],
+        json!([visual_sample])
+    );
+    for verdict in ["pass", "fail"] {
+        let reviewed = visual_request(
+            &mut peer,
+            &mut store,
+            "visual-review",
+            json!({"account_id":"acct_probe_2","sample_id":visual_sample["id"],"verdict":verdict}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reviewed["status"], "visual_reviewed");
+        assert_eq!(
+            reviewed["visual_sample"]["assessment"],
+            json!({"verdict":verdict,"source":"manual"})
+        );
+        assert_eq!(reviewed["visual_sample"]["output"], html);
+    }
+    for bad in [
+        json!({"account_id":"unmanaged","sample_id":visual_sample["id"],"verdict":"fail"}),
+        json!({"account_id":ACCOUNT,"sample_id":visual_sample["id"],"verdict":"fail"}),
+        json!({"account_id":"acct_probe_2","sample_id":visual_sample["id"],"verdict":"invented"}),
+    ] {
+        assert!(
+            visual_request(&mut peer, &mut store, "visual-review", bad)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        visual_request(&mut peer, &mut store, "logic", input)
+            .await
+            .unwrap()["status"],
+        "daily_budget_exhausted"
+    );
+    assert_eq!(store.count("host.model.execute_stream"), 7);
+    assert!(
+        store.model_accounts[1..]
+            .iter()
+            .all(|account| account == "acct_probe_2")
+    );
+    assert_eq!(store.state["budget"].value, budget);
+    assert_eq!(store.state[&first_key].value, original_first);
+    assert_eq!(store.state[&second_key].value, original_second);
+    let status = peer.command(&mut store, "status").await.unwrap();
+    assert!(
+        status["accounts"][1]["logic_tests"][0]
+            .get("output")
+            .is_none()
+    );
+    assert!(
+        status["accounts"][1]["logic_tests"][0]
+            .get("prompt")
+            .is_none()
+    );
+    assert_eq!(
+        status["accounts"][1]["visual_tests"][0]["assessment"]["verdict"],
+        "fail"
+    );
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn incomplete_logic_response_is_unknown_and_expired_logic_lease_preserves_fingerprint_batch()
+{
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore {
+        valid_model_output: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    let original = store.state[&key].value.clone();
+    let input = json!({"account_id":ACCOUNT,"model":"gpt-6-astra","reasoning_effort":"medium"});
+    store.visual_output = Some("21".into());
+    store.omit_model_completion = true;
+    let result = visual_request(&mut peer, &mut store, "logic", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(result["logic_sample"]["status"], "error");
+    assert_eq!(result["logic_sample"]["assessment"]["verdict"], "unknown");
+    assert!(result["logic_sample"]["output"].is_null());
+    assert_eq!(store.state[&key].value, original);
+    store.omit_model_completion = false;
+    store.visual_output = None;
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_id"] = json!("logic:running");
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_until_ms"] = json!(i64::MAX);
+    assert_eq!(
+        visual_request(&mut peer, &mut store, "logic", input)
+            .await
+            .unwrap()["status"],
+        "account_busy"
+    );
+    store.state.get_mut(&key).unwrap().value["quality"]["lease_until_ms"] = json!(0);
+    let resumed = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(resumed["batch"]["attempts"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        resumed["batch"]["attempts"][0],
+        original["batch"]["attempts"][0]
+    );
+    assert!(resumed["quality"]["last_verdict"].is_null());
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn visual_append_preserves_a_review_saved_while_model_is_running() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore {
+        visual_output: Some("<html><head></head><body></body></html>".into()),
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let input = json!({"account_id":ACCOUNT,"model":"gpt-6-astra","reasoning_effort":"medium"});
+    visual_request(&mut peer, &mut store, "visual", input.clone())
+        .await
+        .unwrap();
+    store.review_visual_during_model = true;
+    let result = visual_request(&mut peer, &mut store, "visual", input)
+        .await
+        .unwrap();
+    assert_eq!(result["visual_sample"]["status"], "completed");
+    let evidence = visual_request(
+        &mut peer,
+        &mut store,
+        "visual-evidence",
+        json!({"account_id":ACCOUNT}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(evidence["visual_tests"].as_array().unwrap().len(), 2);
+    assert_eq!(evidence["visual_tests"][0]["assessment"]["verdict"], "fail");
     peer.shutdown().await;
 }
