@@ -25,6 +25,8 @@ jobs:
           node-version: '22'
       - name: Compare scorer with upstream JavaScript
         run: node scripts/verify-scorer.mjs
+      - name: Check three-challenge page flow
+        run: node scripts/verify-ui.cjs
       - name: Format
         run: cargo fmt --manifest-path backend/Cargo.toml --all -- --check
       - name: Shell syntax

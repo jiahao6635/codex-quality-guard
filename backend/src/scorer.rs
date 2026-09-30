@@ -1,11 +1,11 @@
-//! ModelTrace 单响应评分器，固定提交 df3a0f9d3e054c0dc02d6d586686db8daf8fa7c8。
+//! ModelTrace 独立响应聚合评分器，固定提交 df3a0f9d3e054c0dc02d6d586686db8daf8fa7c8。
 //! 改编自 xqy2006/ModelTrace（MIT），完整版权声明见 data/modeltrace/LICENSE。
 //! 分数是候选库内权重，不代表已认证的真实后端模型身份。
 
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::OnceLock};
 
-pub const VERSION: &str = "modeltrace-df3a0f9d-strict-v1";
+pub const VERSION: &str = "modeltrace-df3a0f9d-batch-v2";
 const DIMENSION: usize = 355;
 
 #[derive(Clone, Debug)]
@@ -20,6 +20,16 @@ pub struct Score {
     pub predicted_model: String,
     pub predicted_probability: f64,
     pub expected_probability: f64,
+    #[serde(default)]
+    pub candidates: Vec<Candidate>,
+    #[serde(default)]
+    pub sample_count: usize,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Candidate {
+    pub model: String,
+    pub probability: f64,
 }
 
 #[derive(Deserialize)]
@@ -114,70 +124,59 @@ pub fn challenge(seed: u64) -> Challenge {
     }
 }
 
-/// 只接受完整整数列表，不从解释正文中提取数字。
-/// 调用此函数前，由探针执行层检查传输完成状态。
-fn parse_strict(text: &str, expected_count: usize) -> Result<Vec<usize>, String> {
+/// 在完整文本中取最长数字段；前后说明不会进入指纹，不裁剪到目标数量。
+/// 调用方仍须确认上游响应正常完成；数字够多不能证明传输完整。
+fn parse_output(text: &str, expected_count: usize) -> Result<Vec<usize>, String> {
     if !(292..=332).contains(&expected_count) {
         return Err("challenge count must be within the reference range 292..332".into());
     }
     if text.len() > 16_384 {
         return Err("probe output exceeds the size limit".into());
     }
-    let mut body = text.trim();
-    let array = body.starts_with('[');
-    if array {
-        body = body
-            .strip_prefix('[')
-            .unwrap()
-            .strip_suffix(']')
-            .ok_or("incomplete JSON array")?
-            .trim();
-    }
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    let mut numbers = Vec::with_capacity(expected_count);
-    while i < bytes.len() {
-        let start = i;
-        while i < bytes.len() && bytes[i].is_ascii_digit() {
-            i += 1;
+    let mut best = Vec::new();
+    let mut current = Vec::new();
+    let mut start = 0;
+    let mut previous_end = 0;
+    let bytes = text.as_bytes();
+    while start < bytes.len() {
+        if !bytes[start].is_ascii_digit() {
+            start += 1;
+            continue;
         }
-        if i == start || (i - start > 1 && bytes[start] == b'0') {
-            return Err("output must contain only literal integers and separators".into());
+        let mut end = start + 1;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
         }
-        let value: usize = body[start..i].parse().map_err(|_| "invalid integer")?;
-        if !(1..=DIMENSION).contains(&value) {
-            return Err("number outside 1..355".into());
-        }
-        numbers.push(value);
-        if numbers.len() > expected_count {
-            return Err("too many integers; output was not truncated".into());
-        }
-        let end = i;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i == bytes.len() {
-            break;
-        }
-        if bytes[i] == b',' {
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-                i += 1;
+        if !current.is_empty() && text[previous_end..start].chars().any(char::is_alphabetic) {
+            if current.len() > best.len() {
+                best = std::mem::take(&mut current);
+            } else {
+                current.clear();
             }
-            if i == bytes.len() {
-                return Err("trailing comma".into());
-            }
-        } else if array || i == end {
-            return Err("invalid separator or surrounding prose".into());
         }
+        // 过大整数与范围外数值一样忽略，保留原始数字顺序和重复值。
+        if let Ok(value @ 1..=DIMENSION) = text[start..end].parse::<usize>() {
+            current.push(value);
+        }
+        previous_end = end;
+        start = end;
     }
-    if numbers.len() != expected_count {
+    if current.len() > best.len() {
+        best = current;
+    }
+    let minimum = 80.max((expected_count * 55).div_ceil(100));
+    if best.len() < minimum {
         return Err(format!(
-            "expected {expected_count} integers, received {}",
-            numbers.len()
+            "insufficient probe numbers: {}/{} minimum (requested {expected_count})",
+            best.len(),
+            minimum
         ));
     }
-    Ok(numbers)
+    Ok(best)
+}
+
+pub fn validate_output(text: &str, expected_count: usize) -> Result<usize, String> {
+    parse_output(text, expected_count).map(|numbers| numbers.len())
 }
 
 fn dot(a: &[f64], b: &[f64]) -> f64 {
@@ -233,18 +232,9 @@ fn ordered_features(numbers: &[usize]) -> Vec<f64> {
     result
 }
 
-pub fn score(text: &str, expected_count: usize, expected_model: &str) -> Result<Score, String> {
-    let bank = bank();
-    let expected = bank
-        .models
-        .iter()
-        .position(|m| m.id == expected_model)
-        .ok_or_else(|| {
-            format!("model {expected_model} is absent from the pinned reference bank")
-        })?;
-    let numbers = parse_strict(text, expected_count)?;
+fn fused_scores(numbers: &[usize], bank: &Bank) -> Vec<f64> {
     let mut counts = vec![0.0; DIMENSION];
-    for value in &numbers {
+    for value in numbers {
         counts[value - 1] += 1.0;
     }
     let total = numbers.len() as f64 + 0.5 * DIMENSION as f64;
@@ -266,7 +256,7 @@ pub fn score(text: &str, expected_count: usize, expected_model: &str) -> Result<
     );
 
     let ordered = &bank.robust.ordered_blocks;
-    let scaled = scale_features(&ordered_features(&numbers), ordered);
+    let scaled = scale_features(&ordered_features(numbers), ordered);
     let unit = normalize(scaled.clone());
     let template = standardize(
         (0..bank.models.len())
@@ -294,31 +284,65 @@ pub fn score(text: &str, expected_count: usize, expected_model: &str) -> Result<
             .map(|(a, b)| 0.5 * a + 0.5 * b)
             .collect(),
     );
-    // 此接口每次只评一份响应，不能使用多响应校准系数。
-    let beta = bank.calibration["1"].beta;
-    let logits: Vec<f64> = marginal_scores
+    marginal_scores
         .iter()
         .zip(ordered_scores)
-        .map(|(a, b)| beta * ((1.0 - ordered.weight) * a + ordered.weight * b))
+        .map(|(a, b)| (1.0 - ordered.weight) * a + ordered.weight * b)
+        .collect()
+}
+
+/// 用对应样本数的校准参数评分；正式探针轮次由执行层要求三份完整输出。
+pub fn score_batch(samples: &[(&str, usize)], expected_model: &str) -> Result<Score, String> {
+    if !(1..=3).contains(&samples.len()) {
+        return Err("fingerprint scoring requires one to three independent outputs".into());
+    }
+    let bank = bank();
+    let expected = bank
+        .models
+        .iter()
+        .position(|m| m.id == expected_model)
+        .ok_or_else(|| {
+            format!("model {expected_model} is absent from the pinned reference bank")
+        })?;
+    let mut combined = vec![0.0; bank.models.len()];
+    for (text, expected_count) in samples {
+        let numbers = parse_output(text, *expected_count)?;
+        for (sum, score) in combined.iter_mut().zip(fused_scores(&numbers, bank)) {
+            *sum += score;
+        }
+    }
+    let beta = bank.calibration[&samples.len().to_string()].beta;
+    let logits: Vec<f64> = combined
+        .iter()
+        .map(|value| beta * (value / samples.len() as f64))
         .collect();
     let max = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let weights: Vec<f64> = logits.iter().map(|value| (value - max).exp()).collect();
     let total: f64 = weights.iter().sum();
-    let mut best = 0;
-    for i in 1..weights.len() {
-        if weights[i] > weights[best] {
-            best = i;
-        }
-    }
-    let result = Score {
-        predicted_model: bank.models[best].id.clone(),
-        predicted_probability: weights[best] / total,
-        expected_probability: weights[expected] / total,
-    };
-    if !result.predicted_probability.is_finite() || !result.expected_probability.is_finite() {
+    let mut candidates: Vec<Candidate> = bank
+        .models
+        .iter()
+        .zip(&weights)
+        .map(|(model, weight)| Candidate {
+            model: model.id.clone(),
+            probability: weight / total,
+        })
+        .collect();
+    if candidates.iter().any(|c| !c.probability.is_finite()) {
         return Err("non-finite reference score".into());
     }
-    Ok(result)
+    candidates.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+    Ok(Score {
+        predicted_model: candidates[0].model.clone(),
+        predicted_probability: candidates[0].probability,
+        expected_probability: weights[expected] / total,
+        candidates,
+        sample_count: samples.len(),
+    })
+}
+
+pub fn score(text: &str, expected_count: usize, expected_model: &str) -> Result<Score, String> {
+    score_batch(&[(text, expected_count)], expected_model)
 }
 
 #[cfg(test)]
@@ -326,51 +350,56 @@ mod tests {
     use super::*;
 
     #[derive(Deserialize)]
-    struct Golden {
+    struct Output {
         text: String,
         expected_count: usize,
+    }
+    #[derive(Deserialize)]
+    struct Golden {
+        outputs: Vec<Output>,
         expected_model: String,
         score: Score,
+        parsed_counts: Vec<usize>,
     }
 
     #[test]
-    fn golden_parity_and_strict_validation() {
+    fn golden_batch_parity_and_validation() {
         let cases: Vec<Golden> =
             serde_json::from_str(include_str!("../../data/modeltrace/golden.json")).unwrap();
-        assert!(cases.len() >= 6);
+        assert!(cases.iter().any(|case| case.outputs.len() == 3));
         for case in cases {
-            let actual = score(&case.text, case.expected_count, &case.expected_model).unwrap();
+            let samples: Vec<_> = case
+                .outputs
+                .iter()
+                .map(|sample| (sample.text.as_str(), sample.expected_count))
+                .collect();
+            let actual = score_batch(&samples, &case.expected_model).unwrap();
+            assert_eq!(actual.sample_count, case.score.sample_count);
             assert_eq!(actual.predicted_model, case.score.predicted_model);
             assert!(
                 (actual.predicted_probability - case.score.predicted_probability).abs() < 1e-10
             );
             assert!((actual.expected_probability - case.score.expected_probability).abs() < 1e-10);
+            assert_eq!(actual.candidates.len(), case.score.candidates.len());
+            for (actual, expected) in actual.candidates.iter().zip(&case.score.candidates) {
+                assert_eq!(actual.model, expected.model);
+                assert!((actual.probability - expected.probability).abs() < 1e-10);
+            }
+            for ((text, count), expected) in samples.iter().zip(case.parsed_counts) {
+                assert_eq!(validate_output(text, *count).unwrap(), expected);
+            }
         }
-        let good = vec!["7"; 300].join(",");
-        assert!(score(&good, 300, "gpt-6-astra").is_ok());
-        assert!(score(&format!("[{good}]"), 300, "gpt-6-astra").is_ok());
-        for bad in [
-            format!("answer: {good}"),
-            format!("{good},7"),
-            format!("{good},"),
-            format!("[{good}"),
-            good.replacen('7', "-7", 1),
-            good.replacen('7', "7.0", 1),
-            good.replacen('7', "7e0", 1),
-            good.replacen('7', "356", 1),
-            good.replacen('7', "0", 1),
-            good.replacen('7', "07", 1),
-            format!("```json\n[{good}]\n```"),
-            format!("[{}]", vec!["7"; 300].join(" ")),
-        ] {
-            assert!(
-                score(&bad, 300, "gpt-6-astra").is_err(),
-                "accepted malformed sample"
-            );
-        }
-        assert!(score(&good, 299, "gpt-6-astra").is_err());
-        assert!(score(&good, 301, "gpt-6-astra").is_err());
+        let good = vec!["7"; 165].join(",");
+        assert_eq!(validate_output(&good, 300).unwrap(), 165);
+        assert!(validate_output(&good, 301).is_err());
+        assert!(validate_output(&vec!["7"; 164].join(","), 300).is_err());
+        assert!(validate_output("模型拒绝生成数字", 300).is_err());
+        assert!(validate_output(&"7,".repeat(9000), 300).is_err());
+        assert!(validate_output(&good, 0).is_err());
         assert!(score(&good, 300, "unknown-model").is_err());
+        assert!(score_batch(&[], "gpt-6-astra").is_err());
+        assert!(score_batch(&[(good.as_str(), 300); 4], "gpt-6-astra").is_err());
+        assert!(score_batch(&[(&good, 300), ("refused", 300)], "gpt-6-astra").is_err());
         assert!(!supports_model("unknown-model"));
         assert!(supports_model("gpt-5.6-luna"));
         assert_eq!(challenge(42).prompt, challenge(42).prompt);

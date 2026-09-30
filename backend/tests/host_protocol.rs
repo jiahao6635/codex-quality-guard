@@ -37,6 +37,7 @@ struct FakeStore {
     take_over_during_model: bool,
     probe_budget_too_wide: bool,
     extra_account: bool,
+    valid_model_output: bool,
     http_body: Option<Vec<u8>>,
     deny_budget: bool,
     fail_membership_read: bool,
@@ -233,6 +234,8 @@ impl FakeStore {
                 );
                 assert_eq!(params["provider"], "openai");
                 assert_eq!(params["model"], "gpt-6-astra");
+                assert!(params["previous_response_id"].is_null());
+                assert_eq!(data["input"].as_array().unwrap().len(), 1);
                 assert_eq!(data["model"], "gpt-6-astra");
                 if self.take_over_during_model {
                     let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
@@ -251,7 +254,17 @@ impl FakeStore {
                     }),
                     ExecutionEvent::canonical(CanonicalEvent::TextDelta {
                         index: 0,
-                        text: "unrecognized-probe-output".into(),
+                        text: if self.valid_model_output {
+                            format!(
+                                "完整回答：\n```\n{}\n```",
+                                (1..=300)
+                                    .map(|n| n.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        } else {
+                            "unrecognized-probe-output".into()
+                        },
                     }),
                     ExecutionEvent::canonical(CanonicalEvent::Completed {
                         id: "resp_mock".into(),
@@ -504,7 +517,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
     assert_eq!(
         registration["routes"],
         json!([{"method": "GET", "path": "status", "request_content_types": [],
-            "response_content_types": ["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
+            "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
     );
     assert!(
         store.calls.is_empty(),
@@ -592,9 +605,16 @@ async fn tick_locks_account_and_persists_unknown_evidence_across_restart() {
         .expect("probe evidence must persist")
         .value
         .clone();
-    assert_eq!(persisted["quality"]["sample_counter"], 1);
+    assert_eq!(persisted["quality"]["sample_counter"], 0);
+    assert_eq!(sample["status"], "challenge_recorded");
+    assert_eq!(
+        persisted["batch"]["attempts"][0]["output"],
+        "unrecognized-probe-output"
+    );
+    assert!(persisted["batch"]["score"].is_null());
     assert!(persisted.get("last_sample").is_none());
-    assert_eq!(sample["sample"], persisted["history"][0]);
+    assert!(sample["sample"].is_null());
+    assert_eq!(persisted["history"], json!([]));
     let status = peer.command(&mut store, "status").await.unwrap();
     assert_eq!(status["accounts"][0]["last_sample"], sample["sample"]);
     assert!(
@@ -773,18 +793,14 @@ async fn reconciliation_removes_cooling_accounts_and_restores_only_recovered_acc
     let mut store = FakeStore::default();
     peer.reconcile(&mut store).await;
     let mut record = Record::new(config.tag(), 0);
-    for _ in 0..config.policy.samples_per_round {
-        record.observe(Verdict::Healthy, "gpt-6-astra", 0, &config.policy);
-    }
+    record.observe(Verdict::Healthy, "gpt-6-astra", 0, &config.policy);
     store.seed_record(&record);
     peer.reconcile(&mut store).await;
     assert!(store.groups["healthy"].contains(ACCOUNT));
 
     for _ in 0..config.policy.anomaly_rounds {
         let due = record.next_probe_at_ms;
-        for _ in 0..config.policy.samples_per_round {
-            record.observe(Verdict::Anomaly, "gpt-5.6-luna", due, &config.policy);
-        }
+        record.observe(Verdict::Anomaly, "gpt-5.6-luna", due, &config.policy);
     }
     assert_eq!(record.phase, Phase::Cooling);
     store.seed_record(&record);
@@ -797,9 +813,7 @@ async fn reconciliation_removes_cooling_accounts_and_restores_only_recovered_acc
 
     for round in 0..config.policy.recovery_rounds {
         let due = record.next_probe_at_ms;
-        for _ in 0..config.policy.samples_per_round {
-            record.observe(Verdict::Healthy, "gpt-6-astra", due, &config.policy);
-        }
+        record.observe(Verdict::Healthy, "gpt-6-astra", due, &config.policy);
         store.seed_record(&record);
         peer.reconcile(&mut store).await;
         assert_eq!(
@@ -827,9 +841,7 @@ async fn pool_guard_stops_expansion_without_restoring_existing_isolation() {
     };
     peer.reconcile(&mut store).await;
     let mut record = Record::new(config.tag(), 0);
-    for _ in 0..3 {
-        record.observe(Verdict::Healthy, "gpt-6-astra", 0, &config.policy);
-    }
+    record.observe(Verdict::Healthy, "gpt-6-astra", 0, &config.policy);
     store.seed_record(&record);
     let first_key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
     let second_key = format!("account.{:x}", Sha256::digest(b"acct_probe_2"));
@@ -840,9 +852,7 @@ async fn pool_guard_stops_expansion_without_restoring_existing_isolation() {
     assert_eq!(store.groups["healthy"].len(), 2);
     for _ in 0..2 {
         let due = record.next_probe_at_ms;
-        for _ in 0..3 {
-            record.observe(Verdict::Anomaly, "gpt-5.6-luna", due, &config.policy);
-        }
+        record.observe(Verdict::Anomaly, "gpt-5.6-luna", due, &config.policy);
     }
     store.seed_record(&record);
     // 预算漂移只阻止付费探针，不阻断已有冷却结论的移组。
@@ -901,6 +911,9 @@ async fn explicit_accounts_are_isolated_and_do_not_bypass_due_time() {
     assert_eq!(second["account_id"], ACCOUNT);
     assert_eq!(store.count("host.model.execute"), 2);
     assert_eq!(store.model_accounts, vec!["acct_probe_2", ACCOUNT]);
+    // An explicit account cannot bypass its active lease.
+    let leased_key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    store.state.get_mut(&leased_key).unwrap().value["quality"]["lease_until_ms"] = json!(i64::MAX);
     assert_eq!(
         probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
         "no_due_account"
@@ -913,7 +926,13 @@ async fn explicit_accounts_are_isolated_and_do_not_bypass_due_time() {
     assert_eq!(store.count("host.model.execute"), 2);
     for id in [ACCOUNT, "acct_probe_2"] {
         let key = format!("account.{:x}", Sha256::digest(id.as_bytes()));
-        assert_eq!(store.state[&key].value["quality"]["sample_counter"], 1);
+        assert_eq!(
+            store.state[&key].value["batch"]["attempts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(store.state[&key].value["quality"]["lease_id"], "");
     }
     peer.shutdown().await;
@@ -923,24 +942,34 @@ async fn explicit_accounts_are_isolated_and_do_not_bypass_due_time() {
 async fn automatic_probes_rotate_accounts_and_obey_global_budget() {
     let mut c = config();
     c.auto_probe = true;
-    c.max_daily_attempts = 2;
+    c.max_daily_attempts = 4;
     c.account_ids.push("acct_probe_2".into());
     let mut peer = Peer::start(&c).await;
     let mut store = FakeStore {
         extra_account: true,
+        valid_model_output: true,
         ..FakeStore::default()
     };
-    peer.reconcile(&mut store).await;
-    peer.reconcile(&mut store).await;
-    assert_eq!(store.count("host.model.execute"), 2);
-    assert_eq!(store.state["budget"].value["attempts"], 2);
-    for id in [ACCOUNT, "acct_probe_2"] {
-        let key = format!("account.{:x}", Sha256::digest(id.as_bytes()));
-        assert_eq!(store.state[&key].value["quality"]["sample_counter"], 1);
+    for _ in 0..4 {
+        peer.reconcile(&mut store).await;
     }
-    store.seed_record(&Record::new(c.tag(), 0));
+    assert_eq!(
+        store.model_accounts,
+        [ACCOUNT, ACCOUNT, ACCOUNT, "acct_probe_2"]
+    );
+    assert_eq!(store.state["budget"].value["attempts"], 4);
+    for (id, count) in [(ACCOUNT, 3), ("acct_probe_2", 1)] {
+        let key = format!("account.{:x}", Sha256::digest(id.as_bytes()));
+        assert_eq!(
+            store.state[&key].value["batch"]["attempts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            count
+        );
+    }
     peer.reconcile(&mut store).await;
-    assert_eq!(store.count("host.model.execute"), 2);
+    assert_eq!(store.count("host.model.execute"), 4);
     peer.shutdown().await;
 }
 
@@ -954,5 +983,125 @@ async fn missing_membership_does_not_execute_or_change_groups() {
     assert!(peer.command(&mut store, "tick").await.is_err());
     assert_eq!(store.count("host.model.execute"), 0);
     assert_eq!(store.count("host.groups.change_members"), writes);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn three_complete_answers_resume_and_score_once_with_raw_evidence() {
+    let mut c = config();
+    c.max_daily_attempts = 1;
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        valid_model_output: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let first = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(first["status"], "challenge_recorded");
+    assert_eq!(first["batch"]["attempts"][0]["number_count"], 300);
+    assert!(first["batch"]["score"].is_null());
+    assert!(first["quality"]["last_verdict"].is_null());
+    assert_eq!(
+        probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
+        "daily_budget_exhausted"
+    );
+    peer.shutdown().await;
+    // Budget changes do not erase answers; process restart can continue the same round.
+    c.max_daily_attempts = 3;
+    let mut peer = Peer::start(&c).await;
+    let second = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(second["status"], "challenge_recorded");
+    assert_eq!(second["batch"]["attempts"].as_array().unwrap().len(), 2);
+    assert!(second["batch"]["score"].is_null());
+    let third = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(third["status"], "batch_completed");
+    assert_eq!(third["batch"]["score"]["sample_count"], 3);
+    assert_eq!(
+        third["batch"]["score"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        16
+    );
+    assert_eq!(third["quality"]["sample_counter"], 1);
+    let attempts = third["batch"]["attempts"].as_array().unwrap();
+    let lengths: BTreeSet<_> = attempts
+        .iter()
+        .map(|a| a["expected_count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lengths.len(), 3);
+    assert_eq!(attempts[0], first["batch"]["attempts"][0]);
+    assert!(
+        attempts
+            .iter()
+            .all(|a| a["output"].as_str().unwrap().starts_with("完整回答："))
+    );
+    let inputs: Vec<_> = attempts
+        .iter()
+        .map(|a| {
+            (
+                a["output"].as_str().unwrap(),
+                a["expected_count"].as_u64().unwrap() as usize,
+            )
+        })
+        .collect();
+    let expected = codex_quality_guard::scorer::score_batch(&inputs, &c.model).unwrap();
+    assert_eq!(
+        third["batch"]["score"]["predicted_model"],
+        expected.predicted_model
+    );
+    for (actual, expected) in third["batch"]["score"]["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .zip(expected.candidates)
+    {
+        assert_eq!(actual["model"], expected.model);
+        assert!((actual["probability"].as_f64().unwrap() - expected.probability).abs() < 1e-12);
+    }
+    assert_eq!(store.state["budget"].value["attempts"], 3);
+    assert_eq!(store.model_accounts, [ACCOUNT; 3]);
+    let status = peer.command(&mut store, "status").await.unwrap();
+    assert_eq!(
+        status["accounts"][0]["history"].as_array().unwrap().len(),
+        1
+    );
+    assert!(
+        status["accounts"][0]["batch"]["attempts"][0]
+            .get("output")
+            .is_none()
+    );
+    assert_eq!(status["accounts"][0]["batch"]["score"]["sample_count"], 3);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn six_invalid_answers_finish_unknown_without_fingerprint_or_admission() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore::default();
+    peer.reconcile(&mut store).await;
+    for attempt in 1..=6 {
+        let r = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+        assert_eq!(r["batch"]["attempts"].as_array().unwrap().len(), attempt);
+        assert!(r["batch"]["score"].is_null());
+        assert_eq!(
+            r["status"],
+            if attempt == 6 {
+                "batch_completed"
+            } else {
+                "challenge_recorded"
+            }
+        );
+        if attempt == 6 {
+            assert_eq!(r["batch"]["verdict"], "unknown");
+            assert_eq!(r["batch"]["error"], "insufficient_valid_answers");
+            assert_eq!(r["quality"]["phase"], "pending");
+        }
+    }
+    assert_eq!(
+        probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
+        "no_due_account"
+    );
+    assert_eq!(store.count("host.model.execute"), 6);
     peer.shutdown().await;
 }

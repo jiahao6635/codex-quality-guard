@@ -9,8 +9,8 @@
 *{box-sizing:border-box}body{margin:0;padding:24px;background:var(--bg);color:var(--text);font:14px/1.6 system-ui,sans-serif}main{max-width:1100px;margin:auto}h1{font-size:24px;margin:0}h2{font-size:17px;margin:0 0 12px}p{margin:8px 0;color:var(--muted)}header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:20px}.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:18px 0}.card,section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}.card small{display:block;color:var(--muted)}.card strong{display:block;font-size:19px;overflow-wrap:anywhere}button{font:inherit;border:1px solid var(--line);border-radius:8px;padding:8px 14px;color:var(--text);background:var(--panel);cursor:pointer}button.primary{color:var(--accent);border-color:var(--accent)}button:disabled{opacity:.5;cursor:not-allowed}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}#notice{padding:12px 16px;border-left:3px solid var(--accent);background:var(--panel);margin:12px 0;white-space:pre-wrap}#accounts{display:grid;gap:14px}.account-head{display:flex;justify-content:space-between;align-items:start;gap:16px}.identity{overflow-wrap:anywhere}.identity small{color:var(--muted)}dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}details{margin-top:12px}summary{cursor:pointer;color:var(--accent)}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;font-size:12px}.empty{padding:24px;text-align:center;color:var(--muted)}@media(max-width:600px){body{padding:14px}.account-head,header{flex-wrap:wrap}}
 </style>
 <main>
-<header><div><h1>账号质量探针</h1><p>逐账号查看 ModelTrace 行为证据与冷却状态</p></div><button id="refresh">刷新结果</button></header>
-<p>这是行为一致性检测，不能证明真实模型身份。一次正常样本不等于完成准入；超时不会判为降智。</p>
+<header><div><h1>账号质量探针</h1><p>同一账号独立完成三次挑战，再计算 ModelTrace 模型指纹</p></div><button id="refresh">刷新结果</button></header>
+<p>候选概率来自固定参考库，不能证明上游真实模型身份。必须收齐三份有效完整输出才生成本轮结果；超时不会判为降智。</p>
 <div id="notice" role="status" aria-live="polite">正在读取探针结果…</div>
 <div class="summary" id="summary"></div>
 <p id="rules"></p><div id="accounts"></div>
@@ -20,8 +20,8 @@
 const bridge=window.codexProxyPlugin;
 const $=id=>document.getElementById(id);
 const phases={pending:'待准入',healthy:'正常',suspect:'疑似异常',cooling:'冷却中',recovering:'恢复检测中'};
-const verdicts={healthy:'正常样本',anomaly:'异常样本',unknown:'无法判定'};
-const errors={probe_timeout:'等待完整响应超时',upstream_or_host_execution_failed:'上游或宿主执行失败',invalid_or_unscorable_output:'输出格式不符合探针要求，无法评分',wire_error_or_incomplete:'上游响应错误或未完整结束'};
+const verdicts={healthy:'行为符合预期',anomaly:'行为异常',unknown:'无法判定'};
+const errors={probe_timeout:'等待完整响应超时',upstream_or_host_execution_failed:'上游或宿主执行失败',invalid_or_unscorable_output:'输出格式不符合探针要求，无法评分',wire_error_or_incomplete:'上游响应错误或未完整结束',insufficient_valid_answers:'六次尝试后仍未收齐三份有效输出',fingerprint_batch_expired:'本轮超过30分钟，证据已过期'};
 let snapshot=null,busy=false;
 function text(tag,value,cls){const e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e;}
 function date(ms){return ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}):'—';}
@@ -34,6 +34,27 @@ async function request(method,path,body){
  if(r.status<200||r.status>=300)throw new Error(data.message||data.error||'管理请求失败：'+r.status);
  return data;
 }
+function evidenceKind(sample){return sample.score?.sample_count===3||sample.challenge_id?.includes('-batch-')?'三题流程记录':'旧版单题记录';}
+function validCount(batch){return (batch?.attempts||[]).filter(a=>!a.error&&a.number_count!=null).length;}
+function facts(entries){const dl=document.createElement('dl');for(const [k,v] of entries){const pair=document.createElement('div');pair.append(text('dt',k),text('dd',v));dl.append(pair);}return dl;}
+function batchView(batch,account){
+ const box=document.createElement('div'),count=validCount(batch),done=Boolean(batch.completed_at_ms);
+ box.append(text('h3',done?'本轮检测结果':'本轮进度：'+count+' / 3 份有效完整输出'));
+ box.append(text('p','请求模型：'+batch.model+'；已尝试 '+batch.attempts.length+' / 6 次；开始于 '+date(batch.started_at_ms)));
+ if(batch.score){
+  box.append(facts([['本轮判定',verdicts[batch.verdict]||'无法判定'],['第一候选',batch.score.predicted_model],['库内归因概率',probability(batch.score.predicted_probability)],['预期模型概率',probability(batch.score.expected_probability)]]));
+  const ranked=document.createElement('details');ranked.open=true;ranked.append(text('summary','三份输出聚合后的候选模型排序'));
+  const list=document.createElement('ol');for(const c of batch.score.candidates||[])list.append(text('li',c.model+'：'+probability(c.probability)));ranked.append(list);box.append(ranked);
+ }else box.append(text('p',done?'本轮无法判定：'+(errors[batch.error]||batch.error||'未取得可评分的完整证据'):'尚未生成模型指纹。收齐三份有效输出后，对原始特征分数取平均，再按三次查询校准概率。'));
+ if(batch.attempts.some(a=>!Object.hasOwn(a,'prompt')||!Object.hasOwn(a,'output'))){const load=text('button','加载完整挑战与输出');load.type='button';load.disabled=busy;load.onclick=()=>loadEvidence(account);box.append(load);}
+ for(const [i,a] of batch.attempts.entries()){
+  const details=document.createElement('details');details.append(text('summary','尝试 '+(i+1)+' · '+(a.error?(errors[a.error]||a.error):'有效输出')+' · '+date(a.at_ms)));
+  details.append(facts([['挑战 ID',a.challenge_id],['请求 ID',a.request_id||'未返回'],['要求数字数量',String(a.expected_count)],['解析数字数量',a.number_count==null?'—':String(a.number_count)]]));
+  details.append(text('h4','完整挑战提示词'),text('pre',Object.hasOwn(a,'prompt')?a.prompt:'摘要未加载提示词，请点击“加载完整挑战与输出”'),text('h4','完整模型输出'),text('pre',Object.hasOwn(a,'output')?(a.output??'未取得完整输出'):'摘要未加载输出，请点击“加载完整挑战与输出”'));
+  if(a.error)details.append(text('p','错误码：'+a.error));box.append(details);
+ }
+ return box;
+}
 function render(){
  const s=snapshot,now=Date.now(),limits=s.probe_limits||{};
  const attempts=s.budget&&s.budget.day>=Math.floor(now/86400000)?s.budget.attempts:0;
@@ -41,29 +62,50 @@ function render(){
  const exhausted=attempts>=limits.max_daily_attempts||spent+(limits.max_output_tokens||0)>limits.max_daily_output_tokens;
  $('summary').replaceChildren();
  for(const [label,value] of [['目标模型',s.model],['自动探测',s.auto_probe?'开启':'关闭'],['今日尝试（UTC）',attempts+' / '+limits.max_daily_attempts],['维护状态',s.maintenance?.ok?'正常':'需检查']]){const c=text('div','','card');c.append(text('small',label),text('strong',value));$('summary').append(c);}
- $('rules').textContent='手动检测最多等待90秒，自动检测最多20秒；每次只执行一道题，会产生模型消耗。遵守到期时间、冷却与全局日预算。账号范围在插件设置的 account_ids 中配置。';
+ $('rules').textContent='手动检测串行收集三份有效完整输出，每题最多110秒，本轮最多尝试六次；失败尝试也消耗日预算。自动维护每次执行一道题（最多20秒），接续同一轮。遵守到期时间、冷却与全局日预算；账号范围在插件设置的 account_ids 中配置。';
  $('refresh').disabled=busy;$('accounts').replaceChildren();
  for(const a of s.accounts){
-  const q=a.quality,last=a.last_sample,section=document.createElement('section'),head=text('div','','account-head'),identity=text('div','','identity');
+  const q=a.quality,last=a.last_sample,batch=a.batch,section=document.createElement('section'),head=text('div','','account-head'),identity=text('div','','identity');
   identity.append(text('h2',a.name||a.email||a.account_id),text('small',a.account_id));
-  const button=text('button','检测一次（行为指纹）','primary');button.type='button';
+  const button=text('button',batch&&!batch.completed_at_ms?'继续本轮（三题）':'开始三题指纹检测','primary');button.type='button';
   const reason=!s.enabled?'插件配置未启用':!a.enabled?'账号已禁用':!s.key_scopes_ok||!s.probe_budget_ok?'Key 范围或预算校验未通过':!s.maintenance?.ok?'请先处理维护异常':exhausted?'今日探针预算已用尽':q.lease_until_ms>now?'已有探针执行中':q.next_probe_at_ms>now?'尚未到复测时间':null;
   button.disabled=busy||Boolean(reason);button.onclick=()=>probe(a);head.append(identity,button);section.append(head);
-  const dl=document.createElement('dl');
-  for(const [k,v] of [['账号状态',phases[q.phase]||q.phase],['最近结果',last?(verdicts[last.verdict]||last.verdict):'尚无样本'],['检测时间',date(last?.at_ms)],['下次可检测',date(q.next_probe_at_ms)],['候选模型',last?.score?.predicted_model||'—'],['候选库内分数',probability(last?.score?.predicted_probability)]]){const pair=document.createElement('div');pair.append(text('dt',k),text('dd',v));dl.append(pair);}section.append(dl);
-  if(last?.error)section.append(text('p',(errors[last.error]||'检测错误')+'（'+last.error+'）'));
+  section.append(facts([['账号状态',phases[q.phase]||q.phase],['最近证据记录',last?evidenceKind(last)+'：'+(verdicts[last.verdict]||last.verdict):'尚无结果'],['完成时间',date(last?.at_ms)],['下次可检测',date(q.next_probe_at_ms)]]));
+  if(batch)section.append(batchView(batch,a));
+  else if(last?.error)section.append(text('p',(errors[last.error]||'检测错误')+'（'+last.error+'）'));
   if(reason)section.append(text('p',reason));
-  const details=document.createElement('details');details.append(text('summary','最近 '+a.history.length+' 条证据摘要'),text('pre',JSON.stringify(a.history,null,2)));section.append(details);$('accounts').append(section);
+  const history=a.history||[],details=document.createElement('details');details.append(text('summary','最近 '+history.length+' 条证据摘要'),text('pre',JSON.stringify(history.map(sample=>({record_type:evidenceKind(sample),...sample})),null,2)));section.append(details);$('accounts').append(section);
  }
  if(!s.accounts.length)$('accounts').append(text('p','尚未配置纳管账号，请在插件设置中填写 account_ids。','empty'));
 }
 async function refresh(){busy=true;$('refresh').disabled=true;try{snapshot=await request('GET','status');$('notice').textContent='结果已更新：'+date(Date.now());}catch(e){$('notice').textContent='读取失败：'+e.message;}finally{busy=false;if(snapshot)render();else $('refresh').disabled=false;}}
+async function loadEvidence(account){
+ if(busy)return;
+ busy=true;render();$('notice').textContent='正在读取 '+(account.name||account.account_id)+' 的完整探针证据…';
+ try{const r=await request('POST','evidence',{account_id:account.account_id});
+  const current=snapshot.accounts.find(a=>a.account_id===r.account_id);
+  if(current){current.batch=r.batch;current.history=r.history;current.quality=r.quality;current.last_sample=r.history.at(-1)||null;}
+  $('notice').textContent='完整证据已加载；此次读取不发起模型请求。';
+ }catch(e){$('notice').textContent='读取完整证据失败：'+e.message;}
+ finally{busy=false;render();}
+}
 async function probe(account){
- busy=true;render();$('notice').textContent='正在检测 '+(account.name||account.account_id)+'，最多等待90秒。请保持此页打开。';
- try{const r=await request('POST','probe',{account_id:account.account_id});
-  const labels={daily_budget_exhausted:'今日探针预算已用尽，未发起请求',no_due_account:'账号未到期或不在可探测范围，未发起请求',disabled:'插件配置未启用'};
-  $('notice').textContent=r.status==='sample_recorded'?'本次检测：'+(verdicts[r.sample?.verdict]||'无法判定')+(r.sample?.error?'；'+(errors[r.sample.error]||r.sample.error):''):(labels[r.status]||r.status);
- }catch(e){$('notice').textContent='检测未返回结果：'+e.message+'。请刷新核对证据，避免重复提交。';}
+ if(busy)return;
+ busy=true;render();
+ const name=account.name||account.account_id;
+ const labels={daily_budget_exhausted:'今日探针预算已用尽；本轮开始30分钟内补充预算可继续，过期后需重新检测',no_due_account:'账号未到期或不在可探测范围，未发起请求',disabled:'插件配置未启用',fingerprint_batch_expired:'本轮超过30分钟，证据已过期；到期后可开始新一轮'};
+ try{
+  for(let i=0;i<6;i++){
+   const current=snapshot.accounts.find(a=>a.account_id===account.account_id);
+   $('notice').textContent='正在检测 '+name+'：已有 '+validCount(current?.batch)+' / 3 份有效输出，本题最多等待110秒。请保持此页打开。';
+   const r=await request('POST','probe',{account_id:account.account_id});
+   if(current){if(r.batch)current.batch=r.batch;if(r.quality)current.quality=r.quality;if(r.sample){current.last_sample=r.sample;current.history=[...(current.history||[]),r.sample].slice(-12);}}
+   render();
+   if(r.status==='batch_completed'){$('notice').textContent='三题检测结束：'+(verdicts[r.batch?.verdict]||'无法判定')+(r.batch?.error?'；'+(errors[r.batch.error]||r.batch.error):'');break;}
+   if(r.status!=='challenge_recorded'){$('notice').textContent=labels[r.status]||r.status;break;}
+   $('notice').textContent='已收集 '+validCount(r.batch)+' / 3 份有效输出，正在继续本轮…';
+  }
+ }catch(e){$('notice').textContent='检测中断：'+e.message+'。已保存的输出可在刷新后查看；请核对执行状态后继续本轮。';}
  finally{try{snapshot=await request('GET','status');}catch(e){$('notice').textContent+='\n刷新失败：'+e.message;}busy=false;render();}
 }
 $('refresh').onclick=refresh;window.addEventListener('codex-proxy-themechange',theme);theme();

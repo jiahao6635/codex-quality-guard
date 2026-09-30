@@ -26,6 +26,7 @@ pub enum Phase {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
+    /// 保留旧配置字段；一轮固定为三个完整答案，由 scorer 聚合后交给 observe。
     pub samples_per_round: usize,
     pub anomaly_rounds: u32,
     pub recovery_rounds: u32,
@@ -72,10 +73,6 @@ pub struct Record {
     #[serde(default)]
     pub sample_counter: u64,
     #[serde(default)]
-    round_verdict: Option<Verdict>,
-    #[serde(default)]
-    round_samples: usize,
-    #[serde(default)]
     anomaly_round_count: u32,
     #[serde(default)]
     anomaly_candidate: String,
@@ -104,8 +101,6 @@ impl Record {
             last_verdict: None,
             last_candidate: String::new(),
             sample_counter: 0,
-            round_verdict: None,
-            round_samples: 0,
             anomaly_round_count: 0,
             anomaly_candidate: String::new(),
             last_anomaly_round_at_ms: None,
@@ -134,7 +129,8 @@ impl Record {
         matches!(self.phase, Phase::Healthy | Phase::Suspect)
     }
 
-    /// 接收一次新探针响应。尚未到期或时钟回拨时只递增题号，不累计证据。
+    /// 接收一轮三个完整答案的聚合判定；未知表示整轮未取得有效指纹。
+    /// 尚未到期或时钟回拨时只递增序号，不累计证据。
     pub fn observe(&mut self, verdict: Verdict, candidate: &str, now: i64, policy: &Policy) {
         self.sample_counter = self.sample_counter.saturating_add(1);
         if now < self.updated_at_ms || now < self.next_probe_at_ms {
@@ -161,7 +157,6 @@ impl Record {
             self.phase = Phase::Recovering;
         }
         if verdict == Verdict::Unknown {
-            self.clear_round();
             self.clear_streaks();
             if self.phase == Phase::Recovering {
                 self.cool(now, policy, true);
@@ -174,7 +169,7 @@ impl Record {
             return;
         }
 
-        // 恢复轮出现一个异常样本，就已经不满足整轮正常的要求。
+        // 恢复期一轮判为异常就继续冷却，不放行业务流量。
         if self.phase == Phase::Recovering && verdict == Verdict::Anomaly {
             self.cool(now, policy, true);
             return;
@@ -184,7 +179,6 @@ impl Record {
             self.clear_anomalies();
         } else {
             if self.anomaly_candidate != candidate {
-                self.clear_round();
                 self.clear_anomalies();
                 self.anomaly_candidate = candidate.to_owned();
             }
@@ -192,18 +186,6 @@ impl Record {
                 self.phase = Phase::Suspect;
             }
         }
-
-        let same_round = self.round_verdict == Some(verdict);
-        if !same_round {
-            self.clear_round();
-            self.round_verdict = Some(verdict);
-        }
-        self.round_samples = self.round_samples.saturating_add(1);
-        self.next_probe_at_ms = now;
-        if self.round_samples < policy.samples_per_round.max(1) {
-            return;
-        }
-        self.clear_round();
 
         match verdict {
             Verdict::Healthy if self.phase == Phase::Recovering => {
@@ -261,14 +243,8 @@ impl Record {
         }
         .min(maximum);
         self.phase = Phase::Cooling;
-        self.clear_round();
         self.clear_streaks();
         self.next_probe_at_ms = after(now, self.cooldown_ms);
-    }
-
-    fn clear_round(&mut self) {
-        self.round_verdict = None;
-        self.round_samples = 0;
     }
 
     fn clear_anomalies(&mut self) {
@@ -293,9 +269,7 @@ mod tests {
     use super::*;
 
     fn round(record: &mut Record, verdict: Verdict, candidate: &str, now: i64, policy: &Policy) {
-        for _ in 0..policy.samples_per_round {
-            record.observe(verdict, candidate, now, policy);
-        }
+        record.observe(verdict, candidate, now, policy);
     }
 
     fn admitted(policy: &Policy) -> Record {
@@ -315,34 +289,29 @@ mod tests {
     }
 
     #[test]
-    fn admission_requires_a_complete_clean_round() {
+    fn one_aggregated_healthy_round_admits_without_another_three_verdicts() {
         let policy = Policy::default();
         let mut record = Record::new("v1".to_owned(), 0);
-        for _ in 0..2 {
-            record.observe(Verdict::Healthy, "astra", 0, &policy);
-            assert!(!record.eligible());
-        }
+        assert!(!record.eligible());
         record.observe(Verdict::Healthy, "astra", 0, &policy);
         assert!(record.eligible());
         assert!(record.ever_healthy);
+        assert_eq!(record.sample_counter, 1);
         assert_eq!(record.next_probe_at_ms, policy.healthy_interval_ms);
     }
 
     #[test]
-    fn mixed_samples_and_changed_candidates_cannot_be_combined() {
+    fn changed_candidates_and_a_healthy_round_break_anomaly_streaks() {
         let policy = Policy::default();
         let mut record = admitted(&policy);
         let now = record.next_probe_at_ms;
         record.observe(Verdict::Anomaly, "luna", now, &policy);
-        record.observe(Verdict::Anomaly, "luna", now, &policy);
-        let mut legacy = serde_json::to_value(&record).unwrap();
-        legacy["round_candidate"] = serde_json::json!("luna");
-        record = serde_json::from_value(legacy).unwrap();
+        let now = record.next_probe_at_ms;
         record.observe(Verdict::Healthy, "astra", now, &policy);
-        record.observe(Verdict::Anomaly, "luna", now, &policy);
-        record.observe(Verdict::Anomaly, "other", now, &policy);
-        record.observe(Verdict::Anomaly, "other", now, &policy);
         assert_eq!(record.anomaly_round_count, 0);
+        let now = record.next_probe_at_ms;
+        record.observe(Verdict::Anomaly, "luna", now, &policy);
+        let now = record.next_probe_at_ms;
         record.observe(Verdict::Anomaly, "other", now, &policy);
         assert_eq!(record.anomaly_round_count, 1);
         let later = record.next_probe_at_ms;
@@ -369,17 +338,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_clears_partial_samples_and_consecutive_anomaly_rounds() {
+    fn unknown_breaks_consecutive_anomaly_rounds() {
         let policy = Policy::default();
         let mut record = admitted(&policy);
         let now = record.next_probe_at_ms;
         round(&mut record, Verdict::Anomaly, "luna", now, &policy);
         let now = record.next_probe_at_ms;
-        record.observe(Verdict::Anomaly, "luna", now, &policy);
         record.observe(Verdict::Unknown, "", now, &policy);
         assert!(record.eligible());
         assert_eq!(record.anomaly_round_count, 0);
-        assert_eq!(record.round_samples, 0);
         let now = record.next_probe_at_ms;
         round(&mut record, Verdict::Anomaly, "luna", now, &policy);
         assert!(record.eligible());
@@ -441,9 +408,9 @@ mod tests {
         record.observe(Verdict::Anomaly, "luna", now, &policy);
         let count = record.sample_counter;
         round(&mut record, Verdict::Anomaly, "luna", now - 1, &policy);
-        assert_eq!(record.round_samples, 1);
+        assert_eq!(record.anomaly_round_count, 1);
         assert_eq!(record.updated_at_ms, now);
-        assert_eq!(record.sample_counter, count + 3);
+        assert_eq!(record.sample_counter, count + 1);
     }
 
     #[test]
@@ -478,14 +445,11 @@ mod tests {
     }
 
     #[test]
-    fn invalid_anomaly_label_cannot_complete_a_round() {
+    fn invalid_anomaly_label_is_unknown() {
         let policy = Policy::default();
         let mut record = Record::new("v1".to_owned(), 0);
-        record.observe(Verdict::Healthy, "astra", 0, &policy);
-        record.observe(Verdict::Healthy, "astra", 0, &policy);
         record.observe(Verdict::Anomaly, "", 0, &policy);
         assert_eq!(record.last_verdict, Some(Verdict::Unknown));
-        assert_eq!(record.round_samples, 0);
         assert!(!record.eligible());
     }
 
@@ -540,5 +504,21 @@ mod tests {
         let later = reset.next_probe_at_ms;
         round(&mut reset, Verdict::Healthy, "astra", later, &policy);
         assert!(reset.eligible());
+    }
+
+    #[test]
+    fn legacy_single_answer_evidence_is_discarded_when_detector_changes() {
+        let policy = Policy::default();
+        let mut old = serde_json::to_value(admitted(&policy)).unwrap();
+        old["round_samples"] = serde_json::json!(2);
+        old["round_verdict"] = serde_json::json!("anomaly");
+        old["anomaly_round_count"] = serde_json::json!(1);
+        old["anomaly_candidate"] = serde_json::json!("luna");
+        let restored: Record = serde_json::from_value(old).unwrap();
+        let mut migrated = restored.reset_for_config("three-answer-scorer".into(), 1);
+        assert_eq!(migrated.phase, Phase::Pending);
+        migrated.observe(Verdict::Anomaly, "luna", 1, &policy);
+        assert_eq!(migrated.anomaly_round_count, 1);
+        assert_ne!(migrated.phase, Phase::Cooling);
     }
 }

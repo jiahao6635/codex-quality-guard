@@ -57,6 +57,12 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                     },
                     ManagementRoute {
                         method: "POST".into(),
+                        path: "evidence".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
                         path: "probe".into(),
                         request_content_types: vec!["application/json".into()],
                         response_content_types: vec!["application/json".into()],
@@ -80,7 +86,7 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                 async move {
                     let value = match (call.request.method.as_str(), call.request.path.as_str()) {
                         ("GET", "status") => engine::status(&call.host, &config).await?,
-                        ("POST", "probe") => {
+                        ("POST", "probe" | "evidence") => {
                             #[derive(serde::Deserialize)]
                             #[serde(deny_unknown_fields)]
                             struct Probe {
@@ -88,13 +94,17 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                             }
                             let input: Probe = serde_json::from_slice(&call.payload)
                                 .map_err(|_| host::fault("invalid_probe_request"))?;
-                            engine::tick(
-                                &call.host,
-                                &config,
-                                Some(&input.account_id),
-                                probe_timeout(call.context.timeout_ms)?,
-                            )
-                            .await?
+                            if call.request.path == "evidence" {
+                                engine::evidence(&call.host, &config, &input.account_id).await?
+                            } else {
+                                engine::tick(
+                                    &call.host,
+                                    &config,
+                                    Some(&input.account_id),
+                                    probe_timeout(call.context.timeout_ms)?,
+                                )
+                                .await?
+                            }
                         }
                         _ => return Err(host::fault("unknown_route")),
                     };
@@ -174,7 +184,7 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
 }
 
 fn probe_timeout(parent_ms: u64) -> Result<Duration, gateway_plugin_sdk::PluginFault> {
-    let ms = parent_ms.saturating_sub(5000).min(90000);
+    let ms = parent_ms.saturating_sub(5000).min(110000);
     if ms < 1000 {
         return Err(host::fault("insufficient_probe_deadline"));
     }

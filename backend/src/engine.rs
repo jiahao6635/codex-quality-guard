@@ -40,10 +40,33 @@ struct Evidence {
     error: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
+struct ChallengeEvidence {
+    at_ms: i64,
+    challenge_id: String,
+    prompt: String,
+    expected_count: usize,
+    request_id: Option<String>,
+    output: Option<String>,
+    number_count: Option<usize>,
+    error: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+struct FingerprintBatch {
+    started_at_ms: i64,
+    completed_at_ms: Option<i64>,
+    model: String,
+    attempts: Vec<ChallengeEvidence>,
+    score: Option<Score>,
+    verdict: Option<Verdict>,
+    error: Option<String>,
+}
+#[derive(Clone, Serialize, Deserialize)]
 struct AccountState {
     quality: Record,
     #[serde(default)]
     history: Vec<Evidence>,
+    #[serde(default)]
+    batch: Option<FingerprintBatch>,
 }
 #[derive(Default, Serialize, Deserialize)]
 struct Budget {
@@ -62,9 +85,11 @@ async fn load(
     let mut value = stored.map(|s| s.0).unwrap_or(AccountState {
         quality: Record::new(c.tag(), host::now()),
         history: vec![],
+        batch: None,
     });
     if value.quality.config_tag != c.tag() {
         value.quality = value.quality.reset_for_config(c.tag(), host::now());
+        value.batch = None;
     }
     Ok((value, version))
 }
@@ -150,7 +175,7 @@ async fn ensure_resources(host: &HostClient, c: &Config) -> Result<Resources, Pl
                 name: name.into(),
                 group_resource_keys: vec![group.into()],
                 max_concurrency: if probe { 1 } else { 0 },
-                requests_per_minute: if probe { 2 } else { 0 },
+                requests_per_minute: if probe { 6 } else { 0 },
                 daily_limit_usd: if probe {
                     c.probe_daily_usd.clone()
                 } else {
@@ -403,23 +428,55 @@ pub async fn tick(
                 Phase::Pending => 2,
                 Phase::Healthy => 3,
             };
-            due.push((priority, s.quality.next_probe_at_ms, a.account_id, s, v));
+            let last_attempt = s
+                .batch
+                .as_ref()
+                .and_then(|b| b.attempts.last())
+                .map_or(0, |a| a.at_ms);
+            let new_batch = s
+                .batch
+                .as_ref()
+                .is_none_or(|b| b.completed_at_ms.is_some() || b.attempts.is_empty());
+            due.push((priority, new_batch, last_attempt, a.account_id, s, v));
         }
     }
-    due.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
-    let Some((_, _, id, mut s, version)) = due.into_iter().next() else {
+    due.sort_by(|a, b| (a.0, a.1, a.2, &a.3).cmp(&(b.0, b.1, b.2, &b.3)));
+    let Some((_, _, _, id, mut s, version)) = due.into_iter().next() else {
         return Ok(json!({"status":"no_due_account"}));
     };
     let now = host::now();
     if !s.quality.lease_id.is_empty() {
         s.quality.observe(Verdict::Unknown, "", now, &c.policy);
         s.quality.last_error = Some("expired_probe_lease".into());
+        s.batch = None;
     }
     if s.quality.next_probe_at_ms > now {
         s.quality.lease_id.clear();
         s.quality.lease_until_ms = 0;
         host::put(host, &host::account_key(&id), &s, version).await?;
         return Ok(json!({"status":"expired_probe_recorded_unknown","account_id":id}));
+    }
+    // Do not combine answers collected across long gaps or clock rollback.
+    if s.batch.as_ref().is_some_and(|b| {
+        b.completed_at_ms.is_none()
+            && (now < b.started_at_ms || now - b.started_at_ms > 30 * 60 * 1000)
+    }) {
+        s.quality.observe(Verdict::Unknown, "", now, &c.policy);
+        s.quality.last_error = Some("fingerprint_batch_expired".into());
+        s.batch = None;
+        host::put(host, &host::account_key(&id), &s, version).await?;
+        return Ok(json!({"status":"fingerprint_batch_expired","account_id":id}));
+    }
+    if s.batch.as_ref().is_none_or(|b| b.completed_at_ms.is_some()) {
+        s.batch = Some(FingerprintBatch {
+            started_at_ms: now,
+            completed_at_ms: None,
+            model: c.model.clone(),
+            attempts: vec![],
+            score: None,
+            verdict: None,
+            error: None,
+        });
     }
     let lease = format!(
         "{}-{}-{}",
@@ -444,54 +501,121 @@ pub async fn tick(
         }
     }
     let hash = Sha256::digest(format!("{id}:{lease}").as_bytes());
-    let seed = u64::from_be_bytes(hash[..8].try_into().map_err(|_| fault("seed_failed"))?);
-    let challenge = scorer::challenge(seed);
+    let mut seed = u64::from_be_bytes(hash[..8].try_into().map_err(|_| fault("seed_failed"))?);
+    let batch = s.batch.as_mut().expect("batch created before lease");
+    // ModelTrace uses independent prompts with distinct requested lengths within a batch.
+    let challenge = loop {
+        let challenge = scorer::challenge(seed);
+        if !batch
+            .attempts
+            .iter()
+            .any(|a| a.expected_count == challenge.expected_count)
+        {
+            break challenge;
+        }
+        seed = seed.wrapping_add(1);
+    };
     let result = tokio::time::timeout(
         timeout.saturating_sub(started.elapsed()),
         execute(host, c, &r.probe_key_id, &id, &challenge),
     )
     .await;
-    let (request_id, mut score, mut error) = match result {
-        Ok(Ok((id, score))) => (Some(id), Some(score), None),
+    let (request_id, output, mut error) = match result {
+        Ok(Ok((id, text))) => (Some(id), Some(text), None),
         Ok(Err((id, reason))) => (id, None, Some(reason)),
         Err(_) => (None, None, Some("probe_timeout".into())),
     };
     let finished = host::now();
     if finished >= s.quality.lease_until_ms || finished < now {
-        score = None;
         error = Some("expired_or_clock_shifted_probe".into());
     }
-    let verdict = score
-        .as_ref()
-        .map(|s| classify(s, c))
-        .unwrap_or(Verdict::Unknown);
-    let candidate = score
-        .as_ref()
-        .map(|s| s.predicted_model.as_str())
-        .unwrap_or("");
-    s.quality.observe(verdict, candidate, finished, &c.policy);
-    s.quality.last_error = error.clone();
-    s.quality.last_request_id = request_id.clone();
+    let number_count = if error.is_none() {
+        match scorer::validate_output(output.as_deref().unwrap_or(""), challenge.expected_count) {
+            Ok(count) => Some(count),
+            Err(reason) => {
+                error = Some(reason);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    batch.attempts.push(ChallengeEvidence {
+        at_ms: finished,
+        challenge_id: challenge.id.clone(),
+        prompt: challenge.prompt,
+        expected_count: challenge.expected_count,
+        request_id: request_id.clone(),
+        output,
+        number_count,
+        error: error.clone(),
+    });
+    let valid: Vec<_> = batch
+        .attempts
+        .iter()
+        .filter(|a| a.error.is_none())
+        .filter_map(|a| a.output.as_deref().map(|text| (text, a.expected_count)))
+        .collect();
+    let complete = valid.len() == 3 || batch.attempts.len() >= 6;
+    if complete {
+        let score = if valid.len() == 3 {
+            match scorer::score_batch(&valid, &c.model) {
+                Ok(score) => Some(score),
+                Err(reason) => {
+                    error = Some(reason);
+                    None
+                }
+            }
+        } else {
+            error = Some("insufficient_valid_answers".into());
+            None
+        };
+        let verdict = score
+            .as_ref()
+            .map(|score| classify(score, c))
+            .unwrap_or(Verdict::Unknown);
+        let candidate = score
+            .as_ref()
+            .map(|score| score.predicted_model.as_str())
+            .unwrap_or("");
+        // Exactly one verdict is consumed per three-answer fingerprint, never three votes.
+        s.quality.observe(verdict, candidate, finished, &c.policy);
+        batch.completed_at_ms = Some(finished);
+        batch.score = score.clone();
+        batch.verdict = Some(verdict);
+        batch.error = error.clone();
+        let summary_score = score.map(|mut score| {
+            score.candidates.clear();
+            score
+        });
+        s.history.push(Evidence {
+            at_ms: finished,
+            challenge_id: challenge.id,
+            request_id: request_id.clone(),
+            verdict,
+            score: summary_score,
+            error: error.clone(),
+        });
+        if s.history.len() > 12 {
+            s.history.remove(0);
+        }
+    } else {
+        s.quality.next_probe_at_ms = finished;
+        s.quality.updated_at_ms = finished;
+    }
+    s.quality.last_error = error;
+    s.quality.last_request_id = request_id;
     s.quality.lease_id.clear();
     s.quality.lease_until_ms = 0;
-    let evidence = Evidence {
-        at_ms: finished,
-        challenge_id: challenge.id,
-        request_id,
-        verdict,
-        score,
-        error,
-    };
-    s.history.push(evidence);
-    if s.history.len() > 12 {
-        s.history.remove(0);
-    }
-    // 精确 CAS；其他进程接管租约或改写记录时，旧结果不能覆盖新结论。
+    // Exact CAS: a late response cannot overwrite a replacement worker's evidence.
     host::put(host, &host::account_key(&id), &s, Some(claimed)).await?;
     Ok(
-        json!({"status":"sample_recorded","account_id":id,"model":c.model,"quality":s.quality,"sample":s.history.last()}),
+        json!({"status":if complete {"batch_completed"} else {"challenge_recorded"},
+        "account_id":id,"model":c.model,"quality":s.quality,"batch":s.batch,
+        "sample":if complete {s.history.last()} else {None}}),
     )
 }
+
 fn classify(s: &Score, c: &Config) -> Verdict {
     if s.predicted_model == c.model && s.expected_probability >= c.confidence_threshold {
         Verdict::Healthy
@@ -510,7 +634,7 @@ async fn execute(
     key: &str,
     account: &str,
     challenge: &scorer::Challenge,
-) -> Result<(String, Score), (Option<String>, String)> {
+) -> Result<(String, String), (Option<String>, String)> {
     let failure = |reason: &str| (None, reason.to_string());
     let meta = ModelExecuteRequest {
         client_key_id: Some(key.into()),
@@ -532,17 +656,15 @@ async fn execute(
         .map_err(|_| failure("upstream_or_host_execution_failed"))?;
     let result: ModelExecuteResult =
         serde_json::from_value(reply.result).map_err(|_| failure("invalid_model_metadata"))?;
-    let score = (|| -> Result<Score, String> {
+    let output = (|| -> Result<String, String> {
         let batch = ModelEventBatch::decode(&reply.payload).map_err(|_| "invalid_event_batch")?;
         if result.events as usize != batch.events.len() {
             return Err("event_count_mismatch".into());
         }
-        let text = valid_output(batch)?;
-        scorer::score(&text, challenge.expected_count, &c.model)
-            .map_err(|_| "invalid_or_unscorable_output".into())
+        valid_output(batch)
     })();
-    match score {
-        Ok(score) => Ok((result.request_id, score)),
+    match output {
+        Ok(text) => Ok((result.request_id, text)),
         Err(reason) => Err((Some(result.request_id), reason)),
     }
 }
@@ -550,7 +672,7 @@ async fn execute(
 fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
     let mut text = String::new();
     let mut completed = false;
-    let mut text_index = None;
+
     for event in batch.events {
         if let Some(wire) = event.wire {
             match wire.payload {
@@ -588,13 +710,12 @@ fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
                     ..
                 }
                 | CanonicalEvent::ToolCallDelta { .. } => return Err("non_text_response".into()),
-                CanonicalEvent::TextDelta { index, text: delta } => {
-                    if completed || text_index.is_some_and(|i| i != index) {
+                CanonicalEvent::TextDelta { text: delta, .. } => {
+                    if completed {
                         return Err("ambiguous_output".into());
                     }
-                    text_index = Some(index);
                     text.push_str(&delta);
-                    if text.len() > 32768 {
+                    if text.len() > 16384 {
                         return Err("output_too_large".into());
                     }
                 }
@@ -612,6 +733,14 @@ fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
     if !completed || text.is_empty() {
         return Err("missing_completed_text".into());
     }
+    // Bound the stored JSON size too: control characters can expand sixfold.
+    if serde_json::to_vec(&text)
+        .map_err(|_| "invalid_output_encoding")?
+        .len()
+        > 16384
+    {
+        return Err("output_too_large".into());
+    }
     Ok(text)
 }
 fn bad_wire(data: &Value) -> bool {
@@ -626,6 +755,25 @@ fn bad_wire(data: &Value) -> bool {
             .is_some_and(|s| matches!(s, "failed" | "incomplete" | "cancelled"))
         || data.get("response").is_some_and(bad_wire)
 }
+fn batch_summary(batch: Option<&FingerprintBatch>) -> Value {
+    let mut value = json!(batch);
+    if let Some(attempts) = value.get_mut("attempts").and_then(Value::as_array_mut) {
+        for attempt in attempts {
+            if let Some(fields) = attempt.as_object_mut() {
+                fields.remove("prompt");
+                fields.remove("output");
+            }
+        }
+    }
+    value
+}
+pub async fn evidence(host: &HostClient, c: &Config, account: &str) -> Result<Value, PluginFault> {
+    if !c.account_ids.iter().any(|id| id == account) {
+        return Err(fault("account_not_managed"));
+    }
+    let (s, _) = load(host, account, c).await?;
+    Ok(json!({"account_id":account,"batch":s.batch,"history":s.history,"quality":s.quality}))
+}
 pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault> {
     let r = host::get::<Resources>(host, "resources")
         .await?
@@ -635,7 +783,7 @@ pub async fn status(host: &HostClient, c: &Config) -> Result<Value, PluginFault>
     for id in &c.account_ids {
         let (s, _) = load(host, id, c).await?;
         let account = accounts.iter().find(|a| a.account_id == *id);
-        records.push(json!({"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
+        records.push(json!({"account_id":id,"name":account.map(|a| &a.name),"email":account.and_then(|a| a.email.as_deref()),"enabled":account.is_some_and(|a|a.enabled),"in_healthy_group":r.as_ref().is_some_and(|r|account.is_some_and(|a|a.group_ids.contains(&r.healthy_group_id))),"quality":s.quality,"last_sample":s.history.last(),"history":s.history,"batch":batch_summary(s.batch.as_ref()),"overdue_ms":host::now().saturating_sub(s.quality.next_probe_at_ms).max(0)}));
     }
     let scope_ok = if let Some(r) = &r {
         check_keys(host, r, c).await.is_ok()
@@ -663,6 +811,8 @@ mod tests {
             predicted_model: model.into(),
             predicted_probability: p,
             expected_probability: e,
+            sample_count: 3,
+            candidates: vec![],
         };
         assert_eq!(
             classify(&s("gpt-6-astra", 0.999, 0.999), &c),
@@ -674,6 +824,55 @@ mod tests {
         );
         assert_eq!(classify(&s("gpt-5.6-luna", 0.8, 0.2), &c), Verdict::Unknown);
         assert_eq!(classify(&s("gpt-6-astra", 0.8, 0.8), &c), Verdict::Unknown);
+    }
+    #[test]
+    fn full_evidence_and_hundred_account_summary_fit_host_limits() {
+        let output = "\"".repeat(8191);
+        assert_eq!(serde_json::to_vec(&output).unwrap().len(), 16384);
+        let mut batch = FingerprintBatch {
+            started_at_ms: 1,
+            completed_at_ms: Some(2),
+            model: "gpt-6-astra".into(),
+            attempts: vec![],
+            score: Some(
+                scorer::score_batch(&[("7,".repeat(300).as_str(), 300); 3], "gpt-6-astra").unwrap(),
+            ),
+            verdict: Some(Verdict::Unknown),
+            error: Some("insufficient_valid_answers".into()),
+        };
+        for seed in 0..6 {
+            let challenge = scorer::challenge(seed);
+            batch.attempts.push(ChallengeEvidence {
+                at_ms: 2,
+                challenge_id: challenge.id,
+                prompt: challenge.prompt,
+                expected_count: challenge.expected_count,
+                request_id: Some("x".repeat(128)),
+                output: Some(output.clone()),
+                number_count: None,
+                error: Some("insufficient_valid_answers".into()),
+            });
+        }
+        let mut score = batch.score.clone().unwrap();
+        score.candidates.clear();
+        let state = AccountState {
+            quality: Record::new("x".repeat(64), 1),
+            batch: Some(batch),
+            history: vec![
+                Evidence {
+                    at_ms: 2,
+                    challenge_id: "x".repeat(128),
+                    request_id: Some("x".repeat(128)),
+                    verdict: Verdict::Unknown,
+                    score: Some(score),
+                    error: None
+                };
+                12
+            ],
+        };
+        assert!(serde_json::to_vec(&state).unwrap().len() < 131072);
+        let summary = json!({"quality":state.quality,"batch":batch_summary(state.batch.as_ref()),"history":state.history});
+        assert!(serde_json::to_vec(&vec![summary; 100]).unwrap().len() < 1024 * 1024);
     }
     #[test]
     fn require_clean_complete_text() {

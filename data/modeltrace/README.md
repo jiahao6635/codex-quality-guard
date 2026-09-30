@@ -9,18 +9,22 @@ files from that revision. Their source paths and SHA-256 hashes are recorded in
 independently authenticated the backend identity of its enrollment samples.
 No customer credentials, prompts, responses, or prior live test captures are included.
 
-`backend/src/scorer.rs` ports the single-output score with `calibration["1"]`.
+`backend/src/scorer.rs` ports the reference feature extraction and aggregation.
+Each response is parsed and scored independently. The raw per-model fused scores
+are averaged across responses before one softmax with the matching
+`calibration["1"|"2"|"3"]` coefficient. A completed plugin probe requires three
+independent valid responses; a one-response score remains available for offline
+compatibility checks. The result includes all ranked candidate probabilities.
 Challenge wording and the 292–332 integer range follow the upstream generator;
 selection uses a reproducible seed instead of browser randomness.
 
-Input acceptance is intentionally stricter than the website: the entire output
-must be one comma/whitespace-separated integer list or a JSON integer array,
-with exactly the requested count and all values in 1–355. Surrounding prose,
-code fences, signs, decimal/exponent forms, incomplete arrays, and excessive or
-missing integers are rejected. No extraction, truncation, deduplication, or
-repair is applied. The caller must separately require a completed upstream
-response without transport errors or tool calls. Strict acceptance may reject
-otherwise usable samples; rejected samples are inconclusive, not mismatches.
+The parser receives each complete text, retains its longest number run, ignores
+values outside 1–355, and splits runs at alphabetic prose. It preserves order,
+duplicates and all accepted numbers without clipping to the requested length.
+The minimum accepted run has `max(80, ceil(expected_count * 0.55))` numbers, as in
+the reference. The caller must separately require a completed upstream response
+without transport errors or tool calls: a long enough partial response is not a
+completed response. Outputs larger than 16 KiB are rejected without truncation.
 
 Weights describe similarity within the pinned candidate bank. They are not
 calibrated probabilities of true backend identity for this deployment, and do
@@ -29,5 +33,6 @@ serving conditions, or reference drift require independent validation.
 
 Run `node scripts/verify-scorer.mjs` from the project root. It checks source hashes,
 recomputes deterministic synthetic fixtures with the upstream JavaScript scorer,
-and runs Rust parity and strict-input tests. `--write-golden` regenerates only
+and runs Rust parity tests for single, double and triple outputs, complete-text
+parsing, all ranked probabilities, and invalid-input rejection. `--write-golden` regenerates only
 the synthetic fixture file; it makes no network calls and sends no inference.

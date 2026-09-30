@@ -78,7 +78,7 @@ impl Config {
             }
         }
         let p = &self.policy;
-        if !(3..=10).contains(&p.samples_per_round)
+        if p.samples_per_round != 3
             || !(2..=10).contains(&p.anomaly_rounds)
             || !(2..=10).contains(&p.recovery_rounds)
             || p.anomaly_spacing_ms < 300000
@@ -124,11 +124,6 @@ mod tests {
     #[test]
     fn reject_unbounded_budget_and_unknown_enabled_model() {
         assert!(Config::default().validate().is_ok());
-        // 删去单值配置不改变 0.1.0 的检测身份，避免无故重新准入。
-        assert_eq!(
-            Config::default().tag(),
-            "61f34960e91f3c8e0aec38cab975d29f16b41bcede4ce547190a7c0ca7493a8a"
-        );
         let config = Config {
             enabled: true,
             account_ids: vec!["acct_test".into()],
@@ -144,5 +139,26 @@ mod tests {
         unknown.model = "unregistered-model".into();
         assert!(unknown.validate().is_err());
         assert!(serde_json::from_str::<Config>(r#"{"policy":{"unknown":1}}"#).is_err());
+        let mut bad = config;
+        bad.policy.samples_per_round = 4;
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn detector_changes_reset_evidence_but_scheduling_and_budget_changes_do_not() {
+        let config = Config::default();
+        let mut changed = config.clone();
+        changed.auto_probe = true;
+        changed.max_daily_attempts += 1;
+        changed.account_ids.push("acct_test".into());
+        assert_eq!(config.tag(), changed.tag());
+        changed.confidence_threshold = 0.95;
+        assert_ne!(config.tag(), changed.tag());
+        changed = config.clone();
+        changed.model = "gpt-5.6-luna".into();
+        assert_ne!(config.tag(), changed.tag());
+        changed = config.clone();
+        changed.policy.anomaly_rounds += 1;
+        assert_ne!(config.tag(), changed.tag());
     }
 }
