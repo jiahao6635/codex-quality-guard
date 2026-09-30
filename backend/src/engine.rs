@@ -75,7 +75,7 @@ struct Budget {
     reserved_output_tokens: u64,
 }
 
-const VISUAL_PROMPT: &str = "请制作一个精美的单文件 HTML 页面，主题是‘鹈鹕骑自行车’：画面必须清晰呈现一只具有长喙和喉囊的鹈鹕正在骑自行车，双脚踩在脚踏上；车架、两只车轮、车把、座椅和身体结构协调。设计完整的海边骑行场景、配色、中文标题和少量排版细节，用内联 SVG 绘制主体与背景、CSS 制作车轮和踩踏的循环动画。布局自适应，尊重 prefers-reduced-motion。只用 HTML、内联 SVG 和 CSS，不使用 JavaScript、外部图片、字体、网络资源、表单或 iframe。控制在 3000 个输出 token 左右。只输出从 <!DOCTYPE html> 到 </html> 的完整 HTML 文档，不要 Markdown 代码围栏或解释。";
+const VISUAL_PROMPT: &str = "请制作一个精美的单文件 HTML 页面，主题是‘鹈鹕骑自行车’：画面必须清晰呈现一只具有长喙和喉囊的鹈鹕正在骑自行车，双脚踩在脚踏上；车架、两只车轮、车把、座椅和身体结构协调。设计简洁完整的海边骑行场景、配色和中文标题，用内联 SVG 绘制主体与背景、CSS 制作车轮和踩踏的循环动画。布局自适应，尊重 prefers-reduced-motion。只用 HTML、内联 SVG 和 CSS，不使用 JavaScript、外部图片、字体、网络资源、表单或 iframe。将文档控制在 1000～1500 个输出 token，少量复用 SVG 图形和 CSS 即可，不要增加大段文案、复杂纹理或额外装饰。只输出从 <!DOCTYPE html> 到 </html> 的完整 HTML 文档，不要 Markdown 代码围栏或解释。";
 const VISUAL_MAXIMUM_BYTES: usize = 24 * 1024;
 
 #[derive(Deserialize)]

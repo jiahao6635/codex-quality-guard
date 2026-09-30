@@ -17,7 +17,7 @@ const count=b=>b.attempts.filter(a=>!a.error&&a.number_count!=null).length;
 let serial=0;
 const attempt=(error=null)=>({at_ms:Date.now(),challenge_id:'test-'+(++serial),prompt:'prompt <script>',expected_count:300,request_id:'req',output:error?null:'1, 2, 3 <script>',number_count:error?null:300,error});
 const flatten=e=>[e,...e.children.flatMap(flatten)];
-async function boot({initial=0,failures=0,budgetStop=false,stopAfter=0}={}){
+async function boot({initial=0,failures=0,budgetStop=false,stopAfter=0,visualFailures=0}={}){
  const els=new Map(),ctx={TextDecoder,Date,Number,JSON,Boolean,Error,console,setInterval,clearInterval,encodeURIComponent};
  let posts=0,reads=0,evidenceReads=0,visualPosts=0,visualReads=0;
  const targets=[],batch={started_at_ms:Date.now(),completed_at_ms:null,model:'gpt-test',attempts:Array.from({length:initial},()=>attempt()),score:null,verdict:null,error:null};
@@ -37,6 +37,7 @@ async function boot({initial=0,failures=0,budgetStop=false,stopAfter=0}={}){
   }else if(path==='visual'){
    visualPosts++;assert(account);targets.push(input);assert.equal(input.model,'gpt-other');assert.equal(input.reasoning_effort,'medium');
    const sample={id:'visual-'+visualPosts,account_id:account.account_id,model:input.model,reasoning_effort:input.reasoning_effort,started_at_ms:Date.now()-1824,completed_at_ms:Date.now(),duration_ms:1824,request_id:'req-v-'+visualPosts,output:'<!doctype html><html><body><svg><text>Pelican</text></svg><script>window.PWNED=true</script></body></html>',prompt:'Draw a pelican riding a bicycle',status:'completed',error:null};
+   if(visualPosts<=visualFailures){sample.status='error';sample.error='visual_timeout';sample.output=null;}
    account.visual_tests.push(sample);result={status:'visual_recorded',account_id:account.account_id,visual_sample:sample};
    if(stopAfter&&visualPosts===stopAfter)vm.runInContext('stopRequested=true',ctx);
   }else{
@@ -77,6 +78,7 @@ async function fingerprint(options){const r=await boot(options);await r.run('pro
  r.run('visualResults.clear()');await r.run('refresh()');assert.equal(r.run("Object.hasOwn(visualResults.get('acct-two')[0],'output')"),false);await r.run('loadVisualEvidence(currentAccount())');assert.equal(r.counts().visualReads,1);assert.match(r.run("visualResults.get('acct-two')[0].output"),/Pelican/);
  await r.run('downloadAll()');assert.equal(JSON.parse(r.els.get('export-content').value).account_id,'acct-two');assert.equal(JSON.parse(r.els.get('export-content').value).visual_tests.length,2);assert.equal(r.run('busy'),false);
  r=await boot({stopAfter:1});r.run("selectedId='acct-two';mode='visual';$('visual-model').value='gpt-other';$('visual-effort').value='medium';$('visual-count').value='4'");await r.run('visualProbe(currentAccount())');assert.equal(r.counts().visualPosts,1);assert.match(r.els.get('notice').textContent,/已停止后续生成/);
+ r=await boot({visualFailures:1});r.run("selectedId='acct-two';mode='visual';$('visual-model').value='gpt-other';$('visual-effort').value='medium';$('visual-count').value='1'");await r.run('visualProbe(currentAccount())');assert.equal(r.counts().visualPosts,1);assert.match(r.els.get('notice').textContent,/已完成 0 \/ 1 份，1 份失败/);assert.match(r.els.get('notice').textContent,/查看失败原因/);assert.doesNotMatch(r.els.get('notice').textContent,/预览/);assert.match(r.els.get('work-status').textContent,/成功 0 \/ 失败 1/);assert(flatten(r.els.get('outputs')).some(e=>e.textContent==='可视化生成超时，未取得完整 HTML'));assert.equal(flatten(r.els.get('outputs')).filter(e=>e.tag==='img').length,0);
  assert(!script.includes('.innerHTML'));assert(!script.includes('srcdoc'));assert(!script.includes('createObjectURL'));assert(html.includes('prefers-reduced-motion'));assert(html.includes('aria-live="polite"'));
- console.log('UI checks passed: three-answer attribution, resume/retry/budget bounds, stop after current, fixed visual account and model, saved raw evidence, inert image preview, raw JSON/HTML copy export, Chinese error messages, theme and accessible controls.');
+ console.log('UI checks passed: three-answer attribution, resume/retry/budget bounds, stop after current, fixed visual account and model, saved raw evidence, inert image preview, raw JSON/HTML copy export, Chinese error messages and failed-run counts, theme and accessible controls.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -55,6 +55,7 @@ function errorLabel(value){return errors[value]||value||'未取得完整输出';
 function accountLabel(a){return a.email||a.name||a.account_id;}
 function currentAccount(){return snapshot?.accounts.find(a=>a.account_id===selectedId);}
 function validCount(batch){return (batch?.attempts||[]).filter(a=>!a.error&&a.number_count!=null).length;}
+function visualCounts(results){const completed=results.filter(r=>r.status==='completed'&&!r.error).length;return {completed,failed:results.length-completed};}
 function evidenceKind(sample){return sample.score?.sample_count===3||sample.challenge_id?.includes('-batch-')?'三题流程记录':'旧版单题记录';}
 function theme(){document.documentElement.dataset.theme=bridge?.theme||'light';}
 function notice(value,isRunning=false){$('notice').textContent=value;$('notice').className='notice'+(isRunning?' running':'');}
@@ -156,9 +157,9 @@ function renderFingerprint(account){
  $('footnote').textContent='三份有效完整输出才生成一轮结果，每轮最多尝试六次。超时与无效输出不会判为降智；冷却与恢复依照已配置的复测策略。原文保留最近一轮，历史保留最近 12 条摘要。';
 }
 function renderVisual(account){
- const results=visualResults.get(account?.account_id)||[];
+ const results=visualResults.get(account?.account_id)||[],counts=visualCounts(results);
  $('work-title').textContent='鹈鹕骑自行车 · 可视化能力对比';$('work-description').textContent='使用相同绘图任务观察构图、细节和代码完成度。每份输出固定请求所选账号；可视化结果供人工比较，不用于自动模型归因或账号冷却。';
- $('work-status').textContent=results.length?'已有 '+results.length+' 份输出':'等待生成';$('progress').hidden=true;$('score').hidden=true;
+ $('work-status').textContent=results.length?results.length+' 份结果 · 成功 '+counts.completed+' / 失败 '+counts.failed:'等待生成';$('progress').hidden=true;$('score').hidden=true;
  const count=running&&active?.mode==='visual'?active.total:Number($('visual-count').value||1),displayCount=Math.max(results.length,count);
  for(let i=0;i<displayCount;i++)$('outputs').append(results[i]?outputCard(account,results[i],i+1,true):placeholder('输出 '+(i+1),'生成包含鹈鹕、自行车与海岸场景的独立 HTML，支持安全预览与完整原文导出。',i+1,running&&i===results.length));
  if(results.length){$('evidence-tools').append(text('p','最近 '+results.length+' 份结果 · '+(running?'正在串行生成':'已保存在服务端，可导出完整提示词、源码和请求信息')));if(results.some(a=>!Object.hasOwn(a,'output'))){const load=text('button','加载完整可视化结果','small secondary');load.disabled=busy;load.onclick=()=>loadVisualEvidence(account);$('evidence-tools').append(load);}}
@@ -218,8 +219,9 @@ async function visualProbe(account){
    if(r.status!=='visual_recorded'){notice(stoppedLabels[r.status]||(r.status==='account_busy'?'该账号已有探针执行中，未发起额外请求。':r.status));break;}
    if(!r.visual_sample||r.visual_sample.account_id!==account.account_id)throw new Error('可视化结果缺少目标账号信息');
    visualResults.get(account.account_id).push(r.visual_sample);render();
-   if(stopRequested){notice('已停止后续生成；当前输出已完成并保存。');break;}
-   if(i===total-1)notice('可视化测试结束：'+total+' 份输出已记录。请结合预览与完整源码进行人工比较。');
+   const counts=visualCounts(visualResults.get(account.account_id)),summary='已完成 '+counts.completed+' / '+(i+1)+' 份'+(counts.failed?'，'+counts.failed+' 份失败':'');
+   if(stopRequested){notice('已停止后续生成；'+summary+'。当前请求结果已保存。');break;}
+   if(i===total-1)notice('可视化测试结束：'+summary+'。'+(counts.failed?(counts.completed?'成功结果可查看预览；失败结果请查看错误信息。':'请在结果卡片查看失败原因。'):'可查看预览与完整源码进行人工比较。'));
   }
  }catch(e){notice('可视化测试中断：'+e.message+'。可刷新后加载已保存的完整结果。');}
  finally{await endRun();}
