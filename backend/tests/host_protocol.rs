@@ -14,7 +14,7 @@ use gateway_plugin_sdk::{
     CallContext, ErrorCode, Frame, Handshake, Message, PROTOCOL_VERSION, PluginFault, Stage,
     call::{
         host::{ModelEventBatch, StateRecord},
-        model::{CanonicalEvent, ExecutionEvent, FinishReason},
+        model::{CanonicalEvent, ExecutionEvent, FinishReason, WireEvent, WirePayload},
     },
     client::{read_frame, write_frame},
 };
@@ -42,6 +42,10 @@ struct FakeStore {
     model_events: VecDeque<ExecutionEvent>,
     stall_model_reads: bool,
     malformed_model_read: bool,
+    model_metadata_events: usize,
+    model_stream_bytes: usize,
+    omit_model_completion: bool,
+    stall_model_end: bool,
     http_body: Option<Vec<u8>>,
     deny_budget: bool,
     fail_membership_read: bool,
@@ -252,7 +256,7 @@ impl FakeStore {
                     record.value["quality"]["lease_id"] = json!("replacement-worker");
                     record.value["takeover_marker"] = json!("must-survive-late-response");
                 }
-                let events = vec![
+                let mut events = vec![
                     ExecutionEvent::canonical(CanonicalEvent::Started {
                         id: "resp_mock".into(),
                         model: Some("gpt-6-astra".into()),
@@ -279,7 +283,16 @@ impl FakeStore {
                         reason: FinishReason::Stop,
                     }),
                 ];
-                self.model_events = events.into();
+                if self.omit_model_completion {
+                    events.pop();
+                }
+                self.model_events = (0..self.model_metadata_events).map(|_| ExecutionEvent {
+                    facts: vec![],
+                    wire: Some(WireEvent { protocol: "openai".into(), payload: WirePayload::RawJson {
+                        body: serde_json::to_vec(&json!({"type":"response.reasoning.delta","delta":"m".repeat(200000)})).unwrap(),
+                    }}),
+                    host: None,
+                }).chain(events).collect();
                 return Ok((
                     json!({"request_id":"req_mock", "stream":"stream_mock"}),
                     vec![],
@@ -292,14 +305,15 @@ impl FakeStore {
                     return Ok((json!({"events":1,"end":false}), b"invalid-batch".to_vec()));
                 }
                 return match self.model_events.pop_front() {
-                    Some(event) => Ok((
-                        json!({"events":1,"end":false}),
-                        ModelEventBatch {
+                    Some(event) => {
+                        let payload = ModelEventBatch {
                             events: vec![event],
                         }
                         .encode()
-                        .unwrap(),
-                    )),
+                        .unwrap();
+                        self.model_stream_bytes += payload.len();
+                        Ok((json!({"events":1,"end":false}), payload))
+                    }
                     None => Ok((json!({"events":0,"end":true}), vec![])),
                 };
             }
@@ -442,7 +456,13 @@ impl Peer {
                 } => {
                     assert_eq!(parent_id, id);
                     let result = store.callback(&method, params, &frame.payload);
-                    if method == "host.model.stream_read" && store.stall_model_reads {
+                    if method == "host.model.stream_read"
+                        && (store.stall_model_reads
+                            || (store.stall_model_end
+                                && result
+                                    .as_ref()
+                                    .is_ok_and(|(metadata, _)| metadata["end"] == true)))
+                    {
                         // Keep the read pending while allowing an independent close callback.
                         pending_model_read = Some(callback_id);
                         continue;
@@ -1473,5 +1493,85 @@ async fn invalid_model_stream_is_closed_before_evidence_is_saved() {
         .unwrap();
     assert!(close < saved);
     assert!(store.model_events.is_empty());
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn large_stream_metadata_does_not_count_as_model_output() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore {
+        model_metadata_events: 6,
+        visual_output: Some(
+            "<!doctype html><html><head></head><body><svg></svg></body></html>".into(),
+        ),
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let visual = visual_request(
+        &mut peer,
+        &mut store,
+        "visual",
+        json!({"account_id":ACCOUNT,"model":"gpt-6-astra","reasoning_effort":"low"}),
+    )
+    .await
+    .unwrap();
+    assert!(store.model_stream_bytes > 1024 * 1024);
+    assert_eq!(visual["visual_sample"]["status"], "completed");
+    assert_eq!(
+        visual["visual_sample"]["output"],
+        store.visual_output.clone().unwrap()
+    );
+    assert_eq!(store.count("host.model.stream_close"), 0);
+    store.visual_output = None;
+    store.valid_model_output = true;
+    let probe = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(probe["batch"]["attempts"][0]["number_count"], 300);
+    assert_eq!(store.count("host.model.stream_close"), 0);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn streamed_output_remains_bounded_and_requires_model_stop_and_host_end() {
+    let mut peer = Peer::start(&config()).await;
+    let mut store = FakeStore {
+        visual_output: Some("x".repeat(17000)),
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let probe = probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap();
+    assert_eq!(probe["batch"]["attempts"][0]["error"], "output_too_large");
+    assert_eq!(store.count("host.model.stream_close"), 1);
+    let input = json!({"account_id":ACCOUNT,"model":"gpt-6-astra","reasoning_effort":"low"});
+    store.visual_output = Some("x".repeat(25000));
+    let visual = visual_request(&mut peer, &mut store, "visual", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(visual["visual_sample"]["error"], "output_too_large");
+    assert!(visual["visual_sample"]["output"].is_null());
+    assert_eq!(store.count("host.model.stream_close"), 2);
+    store.visual_output = Some("<!doctype html><html><head></head><body></body></html>".into());
+    store.omit_model_completion = true;
+    let visual = visual_request(&mut peer, &mut store, "visual", input.clone())
+        .await
+        .unwrap();
+    assert_eq!(visual["visual_sample"]["error"], "missing_completed_text");
+    assert!(visual["visual_sample"]["output"].is_null());
+    assert_eq!(
+        store.count("host.model.stream_close"),
+        2,
+        "host end already releases its handle"
+    );
+    store.omit_model_completion = false;
+    store.stall_model_end = true;
+    peer.call_timeout_ms = 6000;
+    let visual = visual_request(&mut peer, &mut store, "visual", input)
+        .await
+        .unwrap();
+    assert_eq!(visual["visual_sample"]["error"], "visual_timeout");
+    assert!(
+        visual["visual_sample"]["output"].is_null(),
+        "model stop alone is not finalized host end"
+    );
+    assert_eq!(store.count("host.model.stream_close"), 3);
     peer.shutdown().await;
 }

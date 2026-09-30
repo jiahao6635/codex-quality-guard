@@ -36,6 +36,7 @@ const $=id=>document.getElementById(id);
 const phases={pending:'待准入',healthy:'正常',suspect:'疑似异常',cooling:'冷却中',recovering:'恢复检测中'};
 const verdicts={healthy:'行为符合预期',anomaly:'行为异常',unknown:'无法判定'};
 const errors={
+ model_event_buffer_too_large:'流式中间事件超过缓存上限，本次未保存完整输出',model_stream_cleanup_pending:'正在等待宿主完成取消收尾',model_stream_close_failed:'宿主未确认模型流关闭',
  probe_timeout:'等待完整响应超时',visual_timeout:'可视化生成超时，未取得完整 HTML',upstream_or_host_execution_failed:'上游或宿主执行失败',
  invalid_or_unscorable_output:'输出格式不符合指纹要求',wire_error_or_incomplete:'上游响应错误或未完整结束',insufficient_valid_answers:'六次尝试后仍未收齐三份有效输出',fingerprint_batch_expired:'本轮超过30分钟，证据已过期',
  incomplete_html_document:'模型未返回完整 HTML 文档，请重新测试',expired_or_clock_shifted_visual:'本次可视化执行已过期或服务器时间发生变化',output_too_large:'输出超过保存大小限制，未保留截断内容',
@@ -51,7 +52,7 @@ function date(ms){return ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}):
 function timeoutSeconds(){return Math.floor((snapshot?.visual_timeout_ms||110000)/1000);}
 function probability(n){return Number.isFinite(n)?(n>0&&n<0.0001?'<0.01%':(n*100).toFixed(2)+'%'):'—';}
 function seconds(ms){return Number.isFinite(ms)?(ms/1000).toFixed(1)+' s':'—';}
-function errorLabel(value){return errors[value]||value||'未取得完整输出';}
+function errorLabel(value){return value?value.split('; ').map(code=>errors[code]||code).join('；'):'未取得完整输出';}
 function accountLabel(a){return a.email||a.name||a.account_id;}
 function currentAccount(){return snapshot?.accounts.find(a=>a.account_id===selectedId);}
 function validCount(batch){return (batch?.attempts||[]).filter(a=>!a.error&&a.number_count!=null).length;}

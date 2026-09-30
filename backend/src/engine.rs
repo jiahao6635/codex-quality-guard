@@ -764,10 +764,11 @@ pub async fn visual(
         &input.model,
         &payload,
         timeout.saturating_sub(started.elapsed()),
+        VISUAL_MAXIMUM_BYTES,
     )
     .await;
     let (request_id, output, error) = match result {
-        Ok((request_id, events)) => match visual_output(events) {
+        Ok((request_id, output)) => match visual_document(output) {
             Ok(output) => (Some(request_id), Some(output), None),
             Err(error) => (Some(request_id), None, Some(error)),
         },
@@ -827,8 +828,7 @@ pub async fn visual(
     Ok(json!({"status":"visual_recorded","account_id":id,"visual_sample":sample}))
 }
 
-fn visual_output(events: ModelEventBatch) -> Result<String, String> {
-    let output = bounded_output(events, VISUAL_MAXIMUM_BYTES)?;
+fn visual_document(output: String) -> Result<String, String> {
     let raw = output.trim();
     let document = if let Some((marker, body)) = raw.split_once('\n')
         && matches!(marker.trim(), "```html" | "```HTML" | "```")
@@ -878,12 +878,9 @@ async fn execute(
     timeout: Duration,
 ) -> Result<(String, String), (Option<String>, String)> {
     let payload = json!({"model":c.model,"input":[{"role":"user","content":[{"type":"input_text","text":challenge.prompt}]}],"store":false,"stream":true,"max_output_tokens":c.max_output_tokens,"reasoning":{"effort":"low"}});
-    let (request_id, batch) = execute_model(host, key, account, &c.model, &payload, timeout)
+    execute_model(host, key, account, &c.model, &payload, timeout, 16384)
         .await
-        .map_err(|(id, error)| (id, error.replace("model_timeout", "probe_timeout")))?;
-    valid_output(batch)
-        .map(|output| (request_id.clone(), output))
-        .map_err(|error| (Some(request_id), error))
+        .map_err(|(id, error)| (id, error.replace("model_timeout", "probe_timeout")))
 }
 
 async fn execute_model(
@@ -893,7 +890,8 @@ async fn execute_model(
     model: &str,
     payload: &Value,
     timeout: Duration,
-) -> Result<(String, ModelEventBatch), (Option<String>, String)> {
+    maximum_bytes: usize,
+) -> Result<(String, String), (Option<String>, String)> {
     let started = Instant::now();
     // Cleanup stays inside the caller's total deadline, before the host cancels its parent.
     let work_timeout = timeout.saturating_sub(Duration::from_secs(2).min(timeout / 4));
@@ -925,8 +923,7 @@ async fn execute_model(
         if !reply.payload.is_empty() {
             return Err("unexpected_model_start_payload");
         }
-        let mut all = ModelEventBatch { events: vec![] };
-        let mut bytes = 0usize;
+        let mut output = TextOutput::default();
         loop {
             let reply = host
                 .call(
@@ -947,18 +944,14 @@ async fn execute_model(
                 if read.events != 0 || !reply.payload.is_empty() {
                     return Err("invalid_model_stream_end");
                 }
-                return Ok(all);
-            }
-            bytes = bytes.saturating_add(reply.payload.len());
-            if bytes > 1024 * 1024 {
-                return Err("model_event_buffer_too_large");
+                return Ok(output);
             }
             let batch =
                 ModelEventBatch::decode(&reply.payload).map_err(|_| "invalid_event_batch")?;
             if read.events as usize != batch.events.len() {
                 return Err("event_count_mismatch");
             }
-            all.events.extend(batch.events);
+            output.append(batch, maximum_bytes)?;
         }
     });
     // Retain the pending read so close can wake it and its host finalizer can finish.
@@ -999,89 +992,114 @@ async fn execute_model(
         }
     }
     match result {
-        Ok(batch) => Ok((stream.request_id, batch)),
+        Ok(output) => output
+            .finish(maximum_bytes)
+            .map(|text| (stream.request_id, text))
+            .map_err(|error| (request_id, error.into())),
         Err(error) => Err((request_id, error.into())),
     }
 }
 
+#[derive(Default)]
+struct TextOutput {
+    text: String,
+    completed: bool,
+}
+
+impl TextOutput {
+    // Validate each bounded host batch, retaining only canonical text rather than repeated wire metadata.
+    fn append(&mut self, batch: ModelEventBatch, maximum_bytes: usize) -> Result<(), &'static str> {
+        for event in batch.events {
+            if let Some(wire) = event.wire {
+                match wire.payload {
+                    WirePayload::Json { data, .. } => {
+                        if bad_wire(&data) {
+                            return Err("wire_error_or_incomplete");
+                        }
+                    }
+                    WirePayload::RawJson { body } => {
+                        let data: Value =
+                            serde_json::from_slice(&body).map_err(|_| "invalid_wire_json")?;
+                        if bad_wire(&data) {
+                            return Err("wire_error_or_incomplete");
+                        }
+                    }
+                    WirePayload::RawBody { body } if !body.is_empty() => {
+                        return Err("unvalidated_wire_body");
+                    }
+                    WirePayload::RawSse { frame } => {
+                        let raw = String::from_utf8(frame).map_err(|_| "invalid_wire_sse")?;
+                        if raw.contains("error")
+                            || raw.contains("response.failed")
+                            || raw.contains("response.incomplete")
+                        {
+                            return Err("wire_error_or_incomplete");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for fact in event.facts {
+                match fact {
+                    CanonicalEvent::ContentAdded {
+                        kind: ContentKind::ToolCall | ContentKind::Image | ContentKind::Audio,
+                        ..
+                    }
+                    | CanonicalEvent::ToolCallDelta { .. } => return Err("non_text_response"),
+                    CanonicalEvent::TextDelta { text: delta, .. } => {
+                        if self.completed {
+                            return Err("ambiguous_output");
+                        }
+                        if self.text.len().saturating_add(delta.len()) > maximum_bytes {
+                            return Err("output_too_large");
+                        }
+                        self.text.push_str(&delta);
+                    }
+                    CanonicalEvent::Completed {
+                        reason: FinishReason::Stop,
+                        ..
+                    } if !self.completed => self.completed = true,
+                    CanonicalEvent::Completed { .. } => {
+                        return Err("incomplete_or_duplicate_completion");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, maximum_bytes: usize) -> Result<String, &'static str> {
+        if !self.completed || self.text.is_empty() {
+            return Err("missing_completed_text");
+        }
+        // Bound the stored JSON size too: control characters can expand sixfold.
+        if serde_json::to_vec(&self.text)
+            .map_err(|_| "invalid_output_encoding")?
+            .len()
+            > maximum_bytes
+        {
+            return Err("output_too_large");
+        }
+        Ok(self.text)
+    }
+}
+
+#[cfg(test)]
+fn bounded_output(batch: ModelEventBatch, maximum_bytes: usize) -> Result<String, String> {
+    let mut output = TextOutput::default();
+    output.append(batch, maximum_bytes).map_err(str::to_owned)?;
+    output.finish(maximum_bytes).map_err(str::to_owned)
+}
+#[cfg(test)]
 fn valid_output(batch: ModelEventBatch) -> Result<String, String> {
     bounded_output(batch, 16384)
 }
-
-fn bounded_output(batch: ModelEventBatch, maximum_bytes: usize) -> Result<String, String> {
-    let mut text = String::new();
-    let mut completed = false;
-
-    for event in batch.events {
-        if let Some(wire) = event.wire {
-            match wire.payload {
-                WirePayload::Json { data, .. } => {
-                    if bad_wire(&data) {
-                        return Err("wire_error_or_incomplete".into());
-                    }
-                }
-                WirePayload::RawJson { body } => {
-                    let data: Value =
-                        serde_json::from_slice(&body).map_err(|_| "invalid_wire_json")?;
-                    if bad_wire(&data) {
-                        return Err("wire_error_or_incomplete".into());
-                    }
-                }
-                WirePayload::RawBody { body } if !body.is_empty() => {
-                    return Err("unvalidated_wire_body".into());
-                }
-                WirePayload::RawSse { frame } => {
-                    let raw = String::from_utf8(frame).map_err(|_| "invalid_wire_sse")?;
-                    if raw.contains("error")
-                        || raw.contains("response.failed")
-                        || raw.contains("response.incomplete")
-                    {
-                        return Err("wire_error_or_incomplete".into());
-                    }
-                }
-                _ => {}
-            }
-        }
-        for fact in event.facts {
-            match fact {
-                CanonicalEvent::ContentAdded {
-                    kind: ContentKind::ToolCall | ContentKind::Image | ContentKind::Audio,
-                    ..
-                }
-                | CanonicalEvent::ToolCallDelta { .. } => return Err("non_text_response".into()),
-                CanonicalEvent::TextDelta { text: delta, .. } => {
-                    if completed {
-                        return Err("ambiguous_output".into());
-                    }
-                    text.push_str(&delta);
-                    if text.len() > maximum_bytes {
-                        return Err("output_too_large".into());
-                    }
-                }
-                CanonicalEvent::Completed {
-                    reason: FinishReason::Stop,
-                    ..
-                } if !completed => completed = true,
-                CanonicalEvent::Completed { .. } => {
-                    return Err("incomplete_or_duplicate_completion".into());
-                }
-                _ => {}
-            }
-        }
-    }
-    if !completed || text.is_empty() {
-        return Err("missing_completed_text".into());
-    }
-    // Bound the stored JSON size too: control characters can expand sixfold.
-    if serde_json::to_vec(&text)
-        .map_err(|_| "invalid_output_encoding")?
-        .len()
-        > maximum_bytes
-    {
-        return Err("output_too_large".into());
-    }
-    Ok(text)
+#[cfg(test)]
+fn visual_output(batch: ModelEventBatch) -> Result<String, String> {
+    visual_document(bounded_output(batch, VISUAL_MAXIMUM_BYTES)?)
 }
+
 fn bad_wire(data: &Value) -> bool {
     data.get("error").is_some_and(|v| !v.is_null())
         || data
