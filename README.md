@@ -140,7 +140,7 @@ ModelTrace 每个账号独立收集三份有效完整输出，再计算一次联
 
 | 管理路由 | 正文 / 结果 |
 | --- | --- |
-| `POST visual` / `POST logic` | `{"account_id":"acct_实际账号ID","model":"gpt-6-astra","reasoning_effort":"medium"}`；一次一份，分别返回 `visual_recorded` / `logic_recorded` 及样本 |
+| `POST visual` / `POST logic` | 旧同步接口，最多110秒；`{"account_id":"acct_实际账号ID","model":"gpt-6-astra","reasoning_effort":"medium"}`，分别返回 `visual_recorded` / `logic_recorded`；新页面使用后台批次 |
 | `POST visual-evidence` / `POST logic-evidence` | `{"account_id":"acct_实际账号ID"}`；分别返回该账号最近4份原始记录 |
 | `POST visual-review` | `{"account_id":"acct_实际账号ID","sample_id":"实际样本ID","verdict":"pass"}`；`verdict` 为 `pass` 或 `fail`，只保存已完成样本的人工判定，不调用模型、不扣额度 |
 | `GET status` | 返回全部账号的摘要，不携带原始提示词与输出 |
@@ -183,7 +183,8 @@ CPS 扩展页限制子 iframe 和直接下载。插件使用`data:image/svg+xml`
 - 修改目标模型、评分阈值或判定策略会要求重新准入；已有冷却保留恢复门槛与租约。批量修改可能暂时移空健康组，应在受控入口验证。
 - 从纳管配置移除的账号会退出两组，旧状态在租约结束后清理；重新纳管须重新准入。
 - `quality` 状态命名空间按账号保存当前或最近一轮的完整指纹提示词、输出、请求 ID、实际解析数量与候选排序，以及最近12轮证据摘要；开始新一轮后替换上一轮完整输出。指纹文本按16 KiB（包含 JSON 转义后的大小）上限接收，过大输出拒绝评分，不截断后冒充完整。
-- 鹈鹕与糖果记录分别使用 `visual`、`logic` 命名空间，每种每账号保留最近4份；完整输出及单份记录的 JSON 序列化结果均受24 KiB上限约束，过大内容记录错误且不保存正文。三类状态由宿主持久化，原始业务请求不进入这些记录；宿主日志与留存策略独立。
+- 鹈鹕与糖果记录分别使用 `visual`、`logic` 命名空间，每种每账号保留最近4份；完整输出及单份记录的 JSON 序列化结果均受24 KiB上限约束，过大内容记录错误且不保存正文。原始业务请求不进入这些记录；宿主日志与留存策略独立。
+- `jobs` 命名空间保存批次进度、幂等标识和最近100个账号任务的完整结果；使用宿主原生持久化，当前 CPS 部署位于 PostgreSQL 的插件状态表。每份账号任务最大128 KiB，整个命名空间最大16 MiB。
 - **插件 → 扩展页 → 账号质量探针** 展示账户身份、三题进度、完整证据、候选排序、冷却状态、鹈鹕人工判定和糖果自动判分。页面通过宿主桥访问已注册管理接口，不读取密钥；打开页面只读取结果，不自动发起推理。
 - `maintenance.membership=database_readback_only`、`runtime_isolation_verified=false` 明示当前只有组成员数据库读回。变更传播到调度缓存、业务 Key 真正不再选到隔离账号，需要实际网关验收；已开始的请求不会被撤回。
 - 配置 `enabled=false` 暂停探针和成员同步；停用宿主实例停止维护；关闭 `auto_probe` 仅停止自动探测；停止 timer 仅停止外部 tick。自有资源和现有成员保留，撤销业务访问应在宿主 Key 管理中处理。
@@ -197,7 +198,7 @@ cargo test --manifest-path backend/Cargo.toml --locked
 node scripts/verify-scorer.mjs
 ```
 
-ModelTrace 固定提交 `df3a0f9d3e054c0dc02d6d586686db8daf8fa7c8`，源码与数据的 MIT 许可、SHA256 和边界见 [data/modeltrace](data/modeltrace/README.md)。运行时不自动更新指纹库。独立插件不会修改宿主仓库代码。
+ModelTrace 固定提交 `df3a0f9d3e054c0dc02d6d586686db8daf8fa7c8`，源码与数据的 MIT 许可、SHA256 和边界见 [data/modeltrace](data/modeltrace/README.md)。运行时不自动更新指纹库。插件运行时通过 SDK 调用宿主；v0.8.0 的额外兼容要求见“后台批次的宿主要求”。
 
 ## 参考项目与算法边界
 
