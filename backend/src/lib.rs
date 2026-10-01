@@ -1,6 +1,7 @@
 mod config;
 mod engine;
 mod host;
+mod jobs;
 pub mod scorer;
 mod settings;
 pub mod state;
@@ -11,7 +12,10 @@ use gateway_plugin_sdk::{
     client::{AuthorError, ComposedPlugin, Empty, PluginBuilder, TypedReply, methods},
 };
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,12 +27,31 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
     let config = Arc::new(config);
     let maintenance_config = Arc::clone(&config);
     let status_config = Arc::clone(&config);
+    let worker_supported = Arc::new(AtomicBool::new(false));
+    let management_worker_supported = Arc::clone(&worker_supported);
     PluginBuilder::from_json(include_bytes!("../../plugin.json"))?
         .on(methods::RECONCILE, move |call| {
             let config = Arc::clone(&maintenance_config);
+            let worker_supported = Arc::clone(&worker_supported);
             async move {
+                worker_supported.store(call.context.timeout_ms >= 600_000, Ordering::Relaxed);
                 let started = Instant::now();
                 engine::reconcile(&call.host, &config).await?;
+                let remaining = Duration::from_millis(call.context.timeout_ms)
+                    .saturating_sub(started.elapsed())
+                    .saturating_sub(Duration::from_secs(30));
+                if worker_supported.load(Ordering::Relaxed)
+                    && remaining >= Duration::from_secs(1)
+                    && jobs::run_one(
+                        &call.host,
+                        &config,
+                        &call.context.incarnation,
+                        remaining.min(Duration::from_secs(570)),
+                    )
+                    .await?
+                {
+                    return Ok(TypedReply::new(Empty {}));
+                }
                 if config.enabled && config.auto_probe {
                     // 为证据落库预留 5 秒；父调用结束后不能留下脱离生命周期的推理任务。
                     let remaining = Duration::from_millis(call.context.timeout_ms)
@@ -39,7 +62,13 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
                             &call.host,
                             &config,
                             None,
-                            remaining.min(Duration::from_secs(20)),
+                            remaining.min(Duration::from_secs(
+                                if worker_supported.load(Ordering::Relaxed) {
+                                    570
+                                } else {
+                                    20
+                                },
+                            )),
                         )
                         .await?;
                     }
@@ -50,6 +79,30 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
         .management(
             ManagementRegistration {
                 routes: vec![
+                    ManagementRoute {
+                        method: "GET".into(),
+                        path: "jobs".into(),
+                        request_content_types: vec![],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "jobs".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "job".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
+                    ManagementRoute {
+                        method: "POST".into(),
+                        path: "job-cancel".into(),
+                        request_content_types: vec!["application/json".into()],
+                        response_content_types: vec!["application/json".into()],
+                    },
                     ManagementRoute {
                         method: "GET".into(),
                         path: "settings".into(),
@@ -137,8 +190,34 @@ pub fn plugin(config: Config) -> Result<ComposedPlugin, AuthorError> {
             },
             move |call| {
                 let config = Arc::clone(&status_config);
+                let worker_supported = Arc::clone(&management_worker_supported);
                 async move {
                     let value = match (call.request.method.as_str(), call.request.path.as_str()) {
+                        ("GET", "jobs") => {
+                            let mut value = jobs::list(&call.host).await?;
+                            value["worker_supported"] =
+                                worker_supported.load(Ordering::Relaxed).into();
+                            value
+                        }
+                        ("POST", "jobs") => {
+                            if !worker_supported.load(Ordering::Relaxed) {
+                                return Err(host::fault(
+                                    "background_worker_requires_maintenance_v2",
+                                ));
+                            }
+                            let input = serde_json::from_slice(&call.payload)
+                                .map_err(|_| host::fault("invalid_job_request"))?;
+                            jobs::enqueue(&call.host, &config, input).await?
+                        }
+                        ("POST", "job" | "job-cancel") => {
+                            let input = serde_json::from_slice(&call.payload)
+                                .map_err(|_| host::fault("invalid_job_request"))?;
+                            if call.request.path == "job" {
+                                jobs::detail(&call.host, input).await?
+                            } else {
+                                jobs::cancel(&call.host, input).await?
+                            }
+                        }
                         ("GET", "settings") => {
                             settings::read(&call.host, &call.context.instance_id).await?
                         }

@@ -6,7 +6,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session = PluginSession::accept(
         tokio::io::stdin(),
         tokio::io::stdout(),
-        SessionConfig::default(),
+        SessionConfig {
+            // 后台维护 v2 由宿主持有父调用；页面刷新不影响其生命周期。
+            maximum_call_timeout: std::time::Duration::from_secs(600),
+            ..SessionConfig::default()
+        },
     )
     .await?;
     let manifest = manifest()?;

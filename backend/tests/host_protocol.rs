@@ -54,6 +54,7 @@ struct FakeStore {
     settings_updates: Vec<Value>,
     reject_settings_update: bool,
     disabled_extra_account: bool,
+    reject_job_completion_once: bool,
 }
 
 impl FakeStore {
@@ -69,28 +70,48 @@ impl FakeStore {
             serde_json::from_slice(payload).unwrap()
         };
         self.calls.push((method.to_owned(), data.clone()));
-        let state_key = if ["visual", "logic"].contains(&params["namespace"].as_str().unwrap_or(""))
-        {
-            format!(
-                "{}:{}",
-                params["namespace"].as_str().unwrap(),
-                params["key"].as_str().unwrap()
-            )
-        } else {
-            params["key"].as_str().unwrap_or("").to_owned()
-        };
+        let state_key =
+            if ["visual", "logic", "jobs"].contains(&params["namespace"].as_str().unwrap_or("")) {
+                format!(
+                    "{}:{}",
+                    params["namespace"].as_str().unwrap(),
+                    params["key"].as_str().unwrap()
+                )
+            } else {
+                params["key"].as_str().unwrap_or("").to_owned()
+            };
         let response = match method {
             "host.state.get" => {
                 assert!(
-                    ["quality", "visual", "logic"].contains(&params["namespace"].as_str().unwrap())
+                    ["quality", "visual", "logic", "jobs"]
+                        .contains(&params["namespace"].as_str().unwrap())
                 );
                 return Ok((json!({"record": self.state.get(&state_key)}), vec![]));
             }
             "host.state.put" => {
                 assert!(
-                    ["quality", "visual", "logic"].contains(&params["namespace"].as_str().unwrap())
+                    ["quality", "visual", "logic", "jobs"]
+                        .contains(&params["namespace"].as_str().unwrap())
                 );
                 let key = state_key;
+                if self.reject_job_completion_once
+                    && key == "jobs:index"
+                    && params["value"]["batches"]
+                        .as_array()
+                        .is_some_and(|batches| {
+                            batches.iter().any(|batch| {
+                                batch["items"].as_array().is_some_and(|items| {
+                                    items.iter().any(|item| item["status"] == "completed")
+                                })
+                            })
+                        })
+                {
+                    self.reject_job_completion_once = false;
+                    return Err(PluginFault::new(
+                        ErrorCode::Conflict,
+                        "simulated queue progress race",
+                    ));
+                }
                 let existing = self.state.get(&key).map(|record| record.version);
                 if existing != params["expected_version"].as_u64()
                     || (self.reject_account_writes && key.starts_with("account."))
@@ -113,7 +134,8 @@ impl FakeStore {
             }
             "host.state.delete" => {
                 assert!(
-                    ["quality", "visual", "logic"].contains(&params["namespace"].as_str().unwrap())
+                    ["quality", "visual", "logic", "jobs"]
+                        .contains(&params["namespace"].as_str().unwrap())
                 );
                 let key = state_key.as_str();
                 if let Some(record) = self.state.get(key)
@@ -666,7 +688,7 @@ async fn management_registers_relative_status_route_and_serves_it() {
     // 宿主要求相对路径；首斜杠会在安装时被拒绝。
     assert_eq!(
         registration["routes"],
-        json!([{"method":"GET","path":"settings","request_content_types":[],"response_content_types":["application/json"]},{"method":"POST","path":"settings","request_content_types":["application/json"],"response_content_types":["application/json"]},{"method": "GET", "path": "status", "request_content_types": [],
+        json!([{"method":"GET","path":"jobs","request_content_types":[],"response_content_types":["application/json"]},{"method":"POST","path":"jobs","request_content_types":["application/json"],"response_content_types":["application/json"]},{"method":"POST","path":"job","request_content_types":["application/json"],"response_content_types":["application/json"]},{"method":"POST","path":"job-cancel","request_content_types":["application/json"],"response_content_types":["application/json"]},{"method":"GET","path":"settings","request_content_types":[],"response_content_types":["application/json"]},{"method":"POST","path":"settings","request_content_types":["application/json"],"response_content_types":["application/json"]},{"method": "GET", "path": "status", "request_content_types": [],
             "response_content_types": ["application/json"]}, {"method":"POST", "path":"evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"probe", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"logic", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"logic-evidence", "request_content_types":["application/json"], "response_content_types":["application/json"]}, {"method":"POST", "path":"visual-review", "request_content_types":["application/json"], "response_content_types":["application/json"]}])
     );
     assert!(
@@ -2068,5 +2090,368 @@ async fn visual_append_preserves_a_review_saved_while_model_is_running() {
     .unwrap();
     assert_eq!(evidence["visual_tests"].as_array().unwrap().len(), 2);
     assert_eq!(evidence["visual_tests"][0]["assessment"]["verdict"], "fail");
+    peer.shutdown().await;
+}
+
+async fn list_jobs(peer: &mut Peer, store: &mut FakeStore) -> Value {
+    let response = peer
+        .invoke(
+            store,
+            "management.handle",
+            Stage::Management,
+            json!({"method":"GET","path":"jobs","query":"","content_type":null}),
+            vec![],
+        )
+        .await
+        .unwrap();
+    serde_json::from_slice(&response.payload).unwrap()
+}
+fn allow_next_job_request(store: &mut FakeStore) {
+    // Advance only the persisted rate fence, without sleeping or touching account admission.
+    if let Some(record) = store.state.get_mut("jobs:index") {
+        record.value["last_started_at_ms"] = json!(0);
+    }
+}
+fn job_input(id: &str, kind: &str, accounts: &[&str], repetitions: u8) -> Value {
+    json!({"submission_id":id,"account_ids":accounts,"kind":kind,"model":"gpt-6-astra","reasoning_effort":"medium","repetitions":repetitions})
+}
+
+#[tokio::test]
+async fn durable_batch_survives_page_reads_and_restart_without_resubmitting_models() {
+    let mut c = config();
+    c.account_ids.push("acct_probe_2".into());
+    let mut peer = Peer::start(&c).await;
+    let mut store = FakeStore {
+        extra_account: true,
+        visual_output: Some(
+            "<html><head></head><body><svg><circle r=\"2\"/></svg></body></html>".into(),
+        ),
+        ..FakeStore::default()
+    };
+    let payload = job_input(
+        "submission-batch-1",
+        "visual",
+        &[ACCOUNT, "acct_probe_2"],
+        2,
+    );
+    assert_eq!(
+        visual_request(&mut peer, &mut store, "jobs", payload.clone())
+            .await
+            .unwrap_err()
+            .message,
+        "background_worker_requires_maintenance_v2"
+    );
+    peer.call_timeout_ms = 600000;
+    peer.reconcile(&mut store).await;
+    let created = visual_request(&mut peer, &mut store, "jobs", payload.clone())
+        .await
+        .unwrap();
+    let first = created["batch"]["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = created["batch"]["items"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        visual_request(&mut peer, &mut store, "jobs", payload.clone())
+            .await
+            .unwrap()["replayed"]
+            .as_bool()
+            .unwrap()
+    );
+    assert_eq!(store.count("host.model.execute_stream"), 0);
+    let mut conflicting = payload;
+    conflicting["repetitions"] = json!(1);
+    assert_eq!(
+        visual_request(&mut peer, &mut store, "jobs", conflicting)
+            .await
+            .unwrap_err()
+            .message,
+        "job_submission_conflict"
+    );
+    assert_eq!(
+        list_jobs(&mut peer, &mut store).await["batches"][0]["items"][0]["status"],
+        "queued"
+    );
+    assert!(
+        visual_request(&mut peer, &mut store, "job", json!({"id":first}))
+            .await
+            .unwrap()["results"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        probe_account(&mut peer, &mut store, ACCOUNT).await.unwrap()["status"],
+        "queue_active"
+    );
+    assert_eq!(store.count("host.model.execute_stream"), 0);
+    peer.reconcile(&mut store).await;
+    let partial = visual_request(&mut peer, &mut store, "job", json!({"id":first}))
+        .await
+        .unwrap();
+    assert_eq!(partial["item"]["completed"], 1);
+    assert_eq!(partial["item"]["status"], "queued");
+    assert_eq!(partial["results"].as_array().unwrap().len(), 1);
+    let key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    let lease_put = store
+        .calls
+        .iter()
+        .find(|(method, data)| {
+            method == "host.state.put"
+                && data["key"] == key
+                && data["value"]["quality"]["lease_until_ms"]
+                    .as_i64()
+                    .unwrap_or(0)
+                    > 0
+        })
+        .unwrap();
+    let lease_until = lease_put.1["value"]["quality"]["lease_until_ms"]
+        .as_i64()
+        .unwrap();
+    assert!(lease_until - partial["results"][0]["started_at_ms"].as_i64().unwrap() > 550000);
+    peer.shutdown().await;
+    let mut peer = Peer::start(&c).await;
+    peer.call_timeout_ms = 600000;
+    for _ in 0..3 {
+        allow_next_job_request(&mut store);
+        peer.reconcile(&mut store).await;
+    }
+    assert_eq!(
+        store.model_accounts,
+        vec![ACCOUNT, ACCOUNT, "acct_probe_2", "acct_probe_2"]
+    );
+    assert_eq!(store.state["budget"].value["attempts"], 4);
+    let last = visual_request(&mut peer, &mut store, "job", json!({"id":second}))
+        .await
+        .unwrap();
+    assert_eq!(last["item"]["status"], "completed");
+    assert_eq!(last["results"].as_array().unwrap().len(), 2);
+    let sample = partial["results"][0]["id"].clone();
+    // Durable task evidence remains reviewable after the short per-account history expires.
+    store.state.remove(&format!(
+        "visual:account.{:x}",
+        Sha256::digest(ACCOUNT.as_bytes())
+    ));
+    visual_request(
+        &mut peer,
+        &mut store,
+        "visual-review",
+        json!({"account_id":ACCOUNT,"sample_id":sample,"verdict":"fail"}),
+    )
+    .await
+    .unwrap();
+    let saved = visual_request(&mut peer, &mut store, "job", json!({"id":first}))
+        .await
+        .unwrap();
+    assert_eq!(saved["results"][0]["assessment"]["verdict"], "fail");
+    assert_eq!(store.count("host.model.execute_stream"), 4);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn durable_jobs_recover_saved_evidence_and_do_not_replay_lost_inflight_calls() {
+    let c = config();
+    let mut peer = Peer::start(&c).await;
+    peer.call_timeout_ms = 600000;
+    let mut store = FakeStore {
+        visual_output: Some("答案是21。".into()),
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let created = visual_request(
+        &mut peer,
+        &mut store,
+        "jobs",
+        job_input("recover-1", "logic", &[ACCOUNT], 1),
+    )
+    .await
+    .unwrap();
+    let task = created["batch"]["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    store.reject_job_completion_once = true;
+    assert!(
+        peer.invoke(
+            &mut store,
+            "plugin.reconcile",
+            Stage::Maintenance,
+            json!({}),
+            vec![]
+        )
+        .await
+        .is_err()
+    );
+    // Saved result recovers immediately, even with a fresh lease in the same incarnation.
+    peer.reconcile(&mut store).await;
+    assert_eq!(store.count("host.model.execute_stream"), 1);
+    // Simulate a crash after engine evidence commit, before job result/progress commit.
+    store.state.remove(&format!("jobs:result.{task}"));
+    let item = &mut store.state.get_mut("jobs:index").unwrap().value["batches"][0]["items"][0];
+    item["status"] = json!("running");
+    item["incarnation"] = json!("terminated-worker");
+    item["completed"] = json!(0);
+    peer.reconcile(&mut store).await;
+    let recovered = visual_request(&mut peer, &mut store, "job", json!({"id":task}))
+        .await
+        .unwrap();
+    assert_eq!(recovered["item"]["status"], "completed");
+    assert_eq!(recovered["results"][0]["assessment"]["verdict"], "pass");
+    assert_eq!(store.count("host.model.execute_stream"), 1);
+    let next = visual_request(
+        &mut peer,
+        &mut store,
+        "jobs",
+        job_input("recover-2", "logic", &[ACCOUNT], 1),
+    )
+    .await
+    .unwrap();
+    let lost = next["batch"]["items"][0]["id"].as_str().unwrap().to_owned();
+    let item = &mut store.state.get_mut("jobs:index").unwrap().value["batches"][1]["items"][0];
+    item["status"] = json!("running");
+    item["incarnation"] = json!("terminated-worker");
+    item["attempt_id"] = json!(format!("{lost}-1"));
+    item["attempts"] = json!(1);
+    let account_key = format!("account.{:x}", Sha256::digest(ACCOUNT.as_bytes()));
+    store.state.get_mut(&account_key).unwrap().value["quality"]["lease_id"] =
+        json!(format!("logic:job:{lost}-1"));
+    store.state.get_mut(&account_key).unwrap().value["quality"]["lease_until_ms"] = json!(i64::MAX);
+
+    peer.reconcile(&mut store).await;
+    let lost = visual_request(&mut peer, &mut store, "job", json!({"id":lost}))
+        .await
+        .unwrap();
+    assert_eq!(lost["item"]["status"], "unknown");
+    assert_eq!(
+        store.state[&account_key].value["quality"]["lease_until_ms"],
+        0
+    );
+    assert_eq!(store.state[&account_key].value["quality"]["lease_id"], "");
+
+    assert_eq!(lost["item"]["error"], "job_interrupted_not_replayed");
+    assert_eq!(store.count("host.model.execute_stream"), 1);
+    assert_eq!(store.state["budget"].value["attempts"], 1);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_fingerprint_collects_three_answers_once_and_budget_cancels_only_unstarted_work() {
+    let mut c = config();
+    c.max_daily_attempts = 4;
+    c.account_ids.push("acct_probe_2".into());
+    let mut peer = Peer::start(&c).await;
+    peer.call_timeout_ms = 600000;
+    let mut store = FakeStore {
+        valid_model_output: true,
+        extra_account: true,
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let created = visual_request(
+        &mut peer,
+        &mut store,
+        "jobs",
+        job_input("fingerprint-job", "fingerprint", &[ACCOUNT], 1),
+    )
+    .await
+    .unwrap();
+    let task = created["batch"]["items"][0]["id"].clone();
+    for _ in 0..3 {
+        allow_next_job_request(&mut store);
+        peer.reconcile(&mut store).await;
+    }
+    let result = visual_request(&mut peer, &mut store, "job", json!({"id":task}))
+        .await
+        .unwrap();
+    assert_eq!(result["item"]["completed"], 3);
+    assert!(["completed", "unknown"].contains(&result["item"]["status"].as_str().unwrap()));
+    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        result["results"][0]["batch"]["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(result["results"][0]["quality"]["sample_counter"], 1);
+    store.visual_output = Some("答案为21".into());
+    let batch = visual_request(
+        &mut peer,
+        &mut store,
+        "jobs",
+        job_input("budget-job", "logic", &[ACCOUNT, "acct_probe_2"], 2),
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        allow_next_job_request(&mut store);
+        peer.reconcile(&mut store).await;
+    }
+    let saved = visual_request(
+        &mut peer,
+        &mut store,
+        "job",
+        json!({"id":batch["batch"]["items"][0]["id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(saved["results"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["item"]["error"], "daily_budget_exhausted");
+    let list = list_jobs(&mut peer, &mut store).await;
+    assert!(
+        list["batches"][0]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["status"] == "skipped")
+    );
+    assert_eq!(store.count("host.model.execute_stream"), 4);
+    assert_eq!(store.state["budget"].value["attempts"], 4);
+    peer.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_queue_retains_completed_outputs_and_never_starts_remaining_repetitions() {
+    let c = config();
+    let mut peer = Peer::start(&c).await;
+    peer.call_timeout_ms = 600000;
+    let mut store = FakeStore {
+        visual_output: Some("答案为21".into()),
+        ..FakeStore::default()
+    };
+    peer.reconcile(&mut store).await;
+    let batch = visual_request(
+        &mut peer,
+        &mut store,
+        "jobs",
+        job_input("cancel-job", "logic", &[ACCOUNT], 4),
+    )
+    .await
+    .unwrap();
+    peer.reconcile(&mut store).await;
+    visual_request(
+        &mut peer,
+        &mut store,
+        "job-cancel",
+        json!({"id":batch["job_id"]}),
+    )
+    .await
+    .unwrap();
+    allow_next_job_request(&mut store);
+    peer.reconcile(&mut store).await;
+    let result = visual_request(
+        &mut peer,
+        &mut store,
+        "job",
+        json!({"id":batch["batch"]["items"][0]["id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["item"]["status"], "cancelled");
+    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    assert_eq!(store.count("host.model.execute_stream"), 1);
     peer.shutdown().await;
 }

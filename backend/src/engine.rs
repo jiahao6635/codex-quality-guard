@@ -44,6 +44,8 @@ struct Evidence {
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct ChallengeEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempt_id: Option<String>,
     at_ms: i64,
     challenge_id: String,
     prompt: String,
@@ -86,12 +88,14 @@ const VISUAL_MAXIMUM_BYTES: usize = 24 * 1024;
 #[serde(deny_unknown_fields)]
 pub struct ManualRequest {
     pub account_id: String,
-    model: String,
-    reasoning_effort: String,
+    pub model: String,
+    pub reasoning_effort: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ManualEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    attempt_id: Option<String>,
     id: String,
     account_id: String,
     model: String,
@@ -146,7 +150,7 @@ fn manual_lease(lease: &str) -> bool {
     lease.starts_with("visual:") || lease.starts_with("logic:")
 }
 
-fn visual_models(c: &Config) -> Vec<String> {
+pub(crate) fn visual_models(c: &Config) -> Vec<String> {
     let mut models: Vec<_> = scorer::supported_models()
         .into_iter()
         .filter(|id| id.starts_with("gpt-"))
@@ -488,6 +492,21 @@ pub async fn tick(
     account: Option<&str>,
     timeout: Duration,
 ) -> Result<Value, PluginFault> {
+    let Some(lease) = crate::jobs::begin_legacy(host, timeout).await? else {
+        return Ok(json!({"status":"queue_active"}));
+    };
+    let result = tick_for_job(host, c, account, timeout, None).await;
+    crate::jobs::release_legacy(host, &lease).await?;
+    result
+}
+
+pub(crate) async fn tick_for_job(
+    host: &HostClient,
+    c: &Config,
+    account: Option<&str>,
+    timeout: Duration,
+    attempt_id: Option<&str>,
+) -> Result<Value, PluginFault> {
     let started = Instant::now();
     if account.is_some_and(|id| !c.account_ids.iter().any(|managed| managed == id)) {
         return Err(fault("account_not_managed"));
@@ -570,14 +589,16 @@ pub async fn tick(
             error: None,
         });
     }
-    let lease = format!(
-        "{}-{}-{}",
-        now,
-        std::process::id(),
-        s.quality.sample_counter
-    );
+    let lease = attempt_id.map(|id| format!("job:{id}")).unwrap_or_else(|| {
+        format!(
+            "{}-{}-{}",
+            now,
+            std::process::id(),
+            s.quality.sample_counter
+        )
+    });
     s.quality.lease_id = lease.clone();
-    s.quality.lease_until_ms = now.saturating_add(150000);
+    s.quality.lease_until_ms = now.saturating_add(lease_duration(timeout));
     let claimed = host::put(host, &host::account_key(&id), &s, version).await?;
     match reserve_budget(host, c).await {
         Ok(true) => {}
@@ -636,6 +657,7 @@ pub async fn tick(
         None
     };
     batch.attempts.push(ChallengeEvidence {
+        attempt_id: attempt_id.map(str::to_owned),
         at_ms: finished,
         challenge_id: challenge.id.clone(),
         prompt: challenge.prompt,
@@ -731,6 +753,22 @@ pub async fn manual_test(
     case: ManualCase,
     timeout: Duration,
 ) -> Result<Value, PluginFault> {
+    let Some(lease) = crate::jobs::begin_legacy(host, timeout).await? else {
+        return Ok(json!({"status":"queue_active","account_id":input.account_id}));
+    };
+    let result = manual_test_for_job(host, c, input, case, timeout, None).await;
+    crate::jobs::release_legacy(host, &lease).await?;
+    result
+}
+
+pub(crate) async fn manual_test_for_job(
+    host: &HostClient,
+    c: &Config,
+    input: ManualRequest,
+    case: ManualCase,
+    timeout: Duration,
+    attempt_id: Option<&str>,
+) -> Result<Value, PluginFault> {
     let started = Instant::now();
     let namespace = case.namespace();
     let id = &input.account_id;
@@ -776,13 +814,17 @@ pub async fn manual_test(
     {
         return Ok(json!({"status":"account_busy","account_id":id}));
     }
-    let lease = format!(
-        "{namespace}:{now}:{}:{}",
-        std::process::id(),
-        version.unwrap_or(0)
-    );
+    let lease = attempt_id
+        .map(|id| format!("{namespace}:job:{id}"))
+        .unwrap_or_else(|| {
+            format!(
+                "{namespace}:{now}:{}:{}",
+                std::process::id(),
+                version.unwrap_or(0)
+            )
+        });
     state.quality.lease_id = lease.clone();
-    state.quality.lease_until_ms = now.saturating_add(150000);
+    state.quality.lease_until_ms = now.saturating_add(lease_duration(timeout));
     let claimed = host::put(host, &key, &state, version).await?;
     match reserve_budget(host, c).await {
         Ok(true) => {}
@@ -825,6 +867,7 @@ pub async fn manual_test(
     };
     let finished = host::now();
     let mut sample = ManualEvidence {
+        attempt_id: attempt_id.map(str::to_owned),
         id: format!(
             "{namespace}-{:x}",
             Sha256::digest(format!("{id}:{lease}").as_bytes())
@@ -891,6 +934,81 @@ pub async fn manual_test(
     Ok(
         json!({"status":format!("{namespace}_recorded"),"account_id":id,(format!("{namespace}_sample")):sample}),
     )
+}
+
+fn lease_duration(timeout: Duration) -> i64 {
+    i64::try_from(timeout.as_millis())
+        .unwrap_or(i64::MAX)
+        .saturating_add(40000)
+}
+
+// Clear only this interrupted job's fence; never release a replacement worker's lease.
+pub(crate) async fn interrupt_job_attempt(
+    host: &HostClient,
+    c: &Config,
+    account: &str,
+    kind: &str,
+    attempt_id: &str,
+) -> Result<(), PluginFault> {
+    let key = host::account_key(account);
+    let Some((mut state, version)) = host::get::<AccountState>(host, &key).await? else {
+        return Ok(());
+    };
+    let lease = if kind == "fingerprint" {
+        format!("job:{attempt_id}")
+    } else {
+        format!("{kind}:job:{attempt_id}")
+    };
+    if state.quality.lease_id != lease {
+        return Ok(());
+    }
+    if kind == "fingerprint" {
+        state
+            .quality
+            .observe(Verdict::Unknown, "", host::now(), &c.policy);
+        state.quality.last_error = Some("job_interrupted_not_replayed".into());
+        state.batch = None;
+    }
+    state.quality.lease_id.clear();
+    state.quality.lease_until_ms = 0;
+    host::put(host, &key, &state, Some(version)).await?;
+    Ok(())
+}
+
+// Recover the narrow window where model evidence was committed before its queue progress.
+pub(crate) async fn completed_job_attempt(
+    host: &HostClient,
+    account: &str,
+    kind: &str,
+    attempt_id: &str,
+) -> Result<Option<Value>, PluginFault> {
+    let key = host::account_key(account);
+    if kind == "fingerprint" {
+        let Some((state, _)) = host::get::<AccountState>(host, &key).await? else {
+            return Ok(None);
+        };
+        if state.batch.as_ref().is_some_and(|batch| {
+            batch
+                .attempts
+                .iter()
+                .any(|attempt| attempt.attempt_id.as_deref() == Some(attempt_id))
+        }) {
+            return Ok(Some(
+                json!({"status":if state.batch.as_ref().is_some_and(|batch|batch.completed_at_ms.is_some()) {"batch_completed"} else {"challenge_recorded"},"account_id":account,"batch":state.batch,"quality":state.quality}),
+            ));
+        }
+        return Ok(None);
+    }
+    let case = if kind == "visual" {
+        ManualCase::Visual
+    } else {
+        ManualCase::Logic
+    };
+    let mut history = host::get_in::<ManualHistory>(host, kind, &key)
+        .await?
+        .map(|record| record.0)
+        .unwrap_or_default();
+    Ok(case.tests(&mut history).iter().find(|sample|sample.attempt_id.as_deref()==Some(attempt_id)).map(|sample|json!({"status":format!("{kind}_recorded"),"account_id":account,(format!("{kind}_sample")):sample})))
 }
 
 fn visual_document(output: &str) -> Result<(), String> {
@@ -1066,27 +1184,35 @@ pub async fn visual_review(
         return Err(fault("invalid_visual_review"));
     }
     let key = host::account_key(&input.account_id);
-    let (mut history, version) = host::get_in::<ManualHistory>(host, "visual", &key)
-        .await?
-        .ok_or_else(|| fault("visual_sample_not_found"))?;
-    let sample = history
-        .visual_tests
-        .iter_mut()
-        .find(|sample| sample.id == input.sample_id)
-        .ok_or_else(|| fault("visual_sample_not_found"))?;
-    if sample.status != "completed" || sample.output.is_none() {
-        return Err(fault("visual_sample_not_completed"));
-    }
-    sample.assessment = Some(json!({"verdict":input.verdict,"source":"manual"}));
-    let sample = sample.clone();
-    if serde_json::to_vec(&sample)
-        .map_err(|_| fault("manual_evidence_encode"))?
-        .len()
-        > VISUAL_MAXIMUM_BYTES
+    let mut reviewed = None;
+    if let Some((mut history, version)) =
+        host::get_in::<ManualHistory>(host, "visual", &key).await?
+        && let Some(sample) = history
+            .visual_tests
+            .iter_mut()
+            .find(|sample| sample.id == input.sample_id)
     {
-        return Err(fault("visual_review_too_large"));
+        if sample.status != "completed" || sample.output.is_none() {
+            return Err(fault("visual_sample_not_completed"));
+        }
+        sample.assessment = Some(json!({"verdict":input.verdict,"source":"manual"}));
+        if serde_json::to_vec(&sample)
+            .map_err(|_| fault("manual_evidence_encode"))?
+            .len()
+            > VISUAL_MAXIMUM_BYTES
+        {
+            return Err(fault("visual_review_too_large"));
+        }
+        reviewed = Some(json!(sample));
+        host::put_in(host, "visual", &key, &history, Some(version)).await?;
     }
-    host::put_in(host, "visual", &key, &history, Some(version)).await?;
+    // Jobs retain complete older outputs beyond the per-account four-sample window.
+    let saved =
+        crate::jobs::visual_review(host, &input.account_id, &input.sample_id, &input.verdict)
+            .await?;
+    let sample = saved
+        .or(reviewed)
+        .ok_or_else(|| fault("visual_sample_not_found"))?;
     Ok(json!({"status":"visual_reviewed","account_id":input.account_id,"visual_sample":sample}))
 }
 
@@ -1438,6 +1564,7 @@ mod tests {
         for seed in 0..6 {
             let challenge = scorer::challenge(seed);
             batch.attempts.push(ChallengeEvidence {
+                attempt_id: None,
                 at_ms: 2,
                 challenge_id: challenge.id,
                 prompt: challenge.prompt,

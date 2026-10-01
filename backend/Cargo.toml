@@ -1,13 +1,13 @@
 [package]
 name = "codex-quality-guard"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.97"
 license = "MIT"
 publish = false
 
 [dependencies]
-gateway-plugin-sdk = { git = "https://github.com/zyycn/codex-proxy-rs.git", rev = "718b959fc137ad7f0d1965abe1f960a978971921", features = ["io"] }
+gateway-plugin-sdk = { git = "https://github.com/jiahao6635/codex-proxy-rs.git", rev = "757d6c4078034d522966969062adbbfd47028b94", features = ["io"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"

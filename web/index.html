@@ -9,9 +9,10 @@
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}button,input,select{font:inherit}button,select{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:9px}button{padding:9px 15px;cursor:pointer;white-space:nowrap}button:hover:not(:disabled){border-color:var(--accent);color:var(--accent-deep)}button:disabled,select:disabled{opacity:.5;cursor:not-allowed}button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}button.primary:hover:not(:disabled){background:var(--accent-deep);color:#fff}button.secondary{border-color:var(--accent);color:var(--accent-deep)}button.small{padding:5px 9px;font-size:12px}a{color:var(--accent-deep)}:focus-visible{outline:3px solid var(--accent);outline-offset:3px}[hidden]{display:none!important}h1,h2,h3,h4,p{margin:0}h1{font-size:23px;font-weight:700;letter-spacing:-.5px}h2{font-size:17px}h3{font-size:14px}p{color:var(--muted)}small{color:var(--muted)}main{max-width:1280px;margin:auto;padding:26px 28px 0}.page-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px}.page-head p{margin-top:4px}.eyebrow{font-size:10px;font-weight:700;letter-spacing:1.8px;color:var(--accent-deep);margin-bottom:5px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px;box-shadow:var(--shadow)}.setup{padding:18px 20px}.account-select{display:grid;grid-template-columns:minmax(220px,1fr) auto;align-items:end;gap:24px}.field{display:flex;flex-direction:column;gap:6px}.field label{font-size:12px;color:var(--muted);font-weight:500}select{min-height:39px;padding:8px 35px 8px 11px;width:100%;max-width:100%}.identity{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-top:16px;padding-top:15px;border-top:1px solid var(--line)}.identity strong{display:block;font-size:16px;overflow-wrap:anywhere}.identity small{display:block;margin-top:2px;overflow-wrap:anywhere}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px}.pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:20px;background:var(--accent-soft);color:var(--accent-deep);font-size:11px;white-space:nowrap}.pill.neutral{background:var(--bg);color:var(--muted)}.pill.warn{background:var(--warn-soft);color:var(--warn)}.pill::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor;flex-shrink:0}.budget{text-align:right;font-size:12px;color:var(--muted)}.budget strong{display:block;color:var(--text);font-size:18px;font-weight:650}.mode-bar{display:flex;justify-content:space-between;align-items:center;gap:18px;margin:23px 0 18px}.modes{display:flex;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:4px;gap:4px}.modes button{border:0;background:transparent;color:var(--muted);padding:8px 17px}.modes button[aria-pressed=true]{background:var(--accent-soft);color:var(--accent-deep);font-weight:650}.mode-hint{font-size:12px}.visual-controls{display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px;margin-bottom:18px;padding:16px 20px}.intro{display:flex;justify-content:space-between;align-items:start;gap:18px;margin:0 0 15px}.intro p{font-size:12px;margin-top:5px;max-width:880px}.notice{padding:10px 13px;margin-bottom:17px;border:1px solid var(--line);border-radius:9px;background:var(--panel);font-size:12px;color:var(--muted);white-space:pre-wrap}.notice.running{border-color:var(--accent);color:var(--accent-deep);background:var(--accent-soft)}.progress{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:17px}.step{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--panel);font-size:12px;color:var(--muted)}.step strong{display:grid;place-items:center;width:25px;height:25px;border-radius:50%;background:var(--bg);font-size:12px}.step.done{border-color:var(--accent);color:var(--accent-deep)}.step.done strong{background:var(--accent-soft)}.step.active{border-style:dashed}.result{padding:20px;margin-bottom:18px;display:grid;grid-template-columns:minmax(220px,.8fr) 1.2fr;gap:28px}.result h2{font-size:22px;overflow-wrap:anywhere;margin:8px 0 4px}.result .probability{font-size:27px;font-weight:700;color:var(--accent-deep);letter-spacing:-.5px}.result p{font-size:12px;margin-top:6px}.ranks{display:grid;gap:10px}.rank-row{font-size:12px}.rank-label{display:flex;justify-content:space-between;gap:12px;margin-bottom:5px}.rank-track{height:5px;background:var(--bg);border-radius:10px;overflow:hidden}.rank-fill{height:100%;background:var(--accent);border-radius:10px}.output-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:16px;margin-bottom:18px}.output-card{min-width:0;overflow:hidden}.output-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 13px;border-bottom:1px solid var(--line)}.output-title{display:flex;align-items:center;gap:9px}.number{display:grid;place-items:center;width:25px;height:25px;border-radius:50%;background:var(--accent-soft);color:var(--accent-deep);font-size:12px}.output-meta{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 13px;color:var(--muted);font-size:11px;border-bottom:1px solid var(--line)}.output-body{padding:14px}.output-body p{font-size:12px}.output-body details{margin-top:12px}.output-card pre{margin:0;background:var(--code);color:var(--code-text);padding:15px;max-height:270px;min-height:125px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.65 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2}.output-card pre.prompt{min-height:0;max-height:180px;margin-top:8px;border-radius:6px}.output-card .output-label{font-size:11px;color:var(--muted);padding:10px 14px 6px}.preview{aspect-ratio:4/3;object-fit:contain;height:auto;background:#f1f4ef;border:0;display:block;width:100%;color-scheme:light}.preview-note{font-size:11px;padding:8px 13px;color:var(--muted);background:var(--bg);border-bottom:1px solid var(--line)}summary{cursor:pointer;font-size:12px;color:var(--accent-deep);overflow-wrap:anywhere}.source summary{padding:10px 14px;border-top:1px solid var(--line)}.source pre{min-height:0;max-height:220px}.placeholder{min-height:260px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;text-align:center;padding:30px;color:var(--muted)}.placeholder-mark{width:43px;height:43px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;font-size:18px;margin-bottom:3px;background:var(--panel)}.placeholder strong{font-size:13px;color:var(--text)}.placeholder p{font-size:12px;max-width:280px}.loading-dot{width:8px;height:8px;display:inline-block;border-radius:50%;background:var(--accent);animation:pulse 1.2s infinite}.evidence-tools{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:14px 0}.evidence-tools p{font-size:12px}.history{padding:13px 16px;margin:18px 0}.history pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto;font-size:11px;margin-bottom:0}.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;margin:10px 0;font-size:11px}.facts dt{color:var(--muted)}.facts dd{margin:2px 0 0;overflow-wrap:anywhere}.footnote{font-size:11px;padding:0 0 18px;color:var(--muted)}.actions{position:sticky;bottom:0;z-index:2;padding:13px 20px;margin:18px -1px 0;display:flex;align-items:center;justify-content:space-between;gap:16px;background:var(--panel);border:1px solid var(--line);border-bottom:0;border-radius:12px 12px 0 0;box-shadow:0 -3px 15px #19394005}.action-right{display:flex;align-items:center;gap:12px}.action-caption{font-size:11px;color:var(--muted);text-align:right;max-width:410px}.empty-state{padding:44px 24px;text-align:center;margin-bottom:18px}.empty-state p{font-size:13px;margin-top:6px}.all-ranks{margin-top:12px}.all-ranks ol{padding-left:18px;font-size:12px;color:var(--muted)}.error-text{color:var(--warn)!important}.attempts-failed{margin:15px 0}.attempts-failed>.output-grid{margin-top:12px}.account-tags{display:flex;gap:7px;justify-content:flex-end;flex-wrap:wrap}.running-clock{font-variant-numeric:tabular-nums}.status-text{font-size:11px;color:var(--accent-deep)}
 dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(850px,calc(100% - 28px));max-height:90vh;padding:22px}dialog::backdrop{background:#10242b80}.export-head{display:flex;align-items:start;justify-content:space-between;gap:15px;margin-bottom:15px}.export-head p{font:11px ui-monospace,monospace;margin-top:5px;overflow-wrap:anywhere}dialog>p{font-size:12px}.export-label{display:block;color:var(--muted);font-size:12px;margin:16px 0 6px}#export-content{width:100%;height:45vh;resize:vertical;background:var(--code);color:var(--code-text);border:1px solid var(--line);border-radius:8px;padding:12px;font:11px/1.6 ui-monospace,monospace;white-space:pre}.export-actions{display:flex;align-items:center;justify-content:space-between;gap:15px;margin-top:12px}.export-actions span{font-size:12px;color:var(--muted)}@keyframes pulse{50%{opacity:.3}}@media(prefers-reduced-motion:reduce){*{animation:none!important}}@media(min-width:900px){.output-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:650px){main{padding:17px 14px 0}.page-head{align-items:start}.page-head h1{font-size:20px}.page-head p{font-size:12px}.page-head>button{padding:7px 10px;font-size:12px}.account-select{grid-template-columns:minmax(0,1fr);gap:12px}.budget{text-align:left}.budget strong{display:inline;margin-right:7px;font-size:15px}.identity{flex-direction:column}.account-tags{justify-content:flex-start}.mode-bar{align-items:stretch;flex-direction:column;gap:7px}.modes button{flex:1;font-size:12px;padding:8px}.visual-controls{grid-template-columns:1fr 1fr;padding:14px}.visual-controls .field:first-child{grid-column:1/-1}.progress{gap:6px}.step{padding:10px 7px;gap:5px;font-size:11px}.step strong{width:21px;height:21px}.result{grid-template-columns:1fr;gap:19px}.actions{padding:11px 12px;align-items:stretch}.action-right{justify-content:flex-end;flex-wrap:wrap;gap:7px}.action-caption{width:100%;font-size:10px}.actions>button{align-self:end;padding:8px 10px;font-size:12px}.preview{height:auto}.intro{flex-direction:column;gap:7px}.setup{padding:15px}.evidence-tools{align-items:start;flex-direction:column}}
 .head-actions,.settings-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.head-actions{justify-content:flex-end}.settings-actions{justify-content:space-between;margin-top:18px}.settings-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px}.settings-grid input[type=number],input[type=search]{width:100%;min-height:39px;padding:8px 11px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:9px}.settings-grid small,.settings-accounts>small{font-size:11px}.settings-grid .check-label{display:flex;align-items:center;gap:8px;color:var(--text);font-size:14px}.check-label input,.account-option input{accent-color:var(--accent);width:17px;height:17px;flex-shrink:0}#settings-fields{border:0;padding:0;margin:0;min-width:0}.settings-accounts{border:1px solid var(--line);border-radius:10px;margin:24px 0 18px;padding:14px;min-width:0}.settings-accounts legend{padding:0 6px;font-size:13px}.settings-accounts legend span{font-size:11px;color:var(--muted)}.account-options{margin:10px 0;max-height:280px;overflow:auto}.account-option{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--line);cursor:pointer}.account-option>span{min-width:0}.account-option strong,.account-option small{display:block;overflow-wrap:anywhere}.account-option strong{font-size:12px}.account-option small{font-size:10px}.account-option input:disabled+span{opacity:.65}.settings-rules{padding:12px 0}.settings-rules p{font-size:12px;margin-top:10px}.settings-rules .facts{grid-template-columns:repeat(2,minmax(0,1fr))}#settings-changes{margin:12px 0 0}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media(max-width:650px){.head-actions{gap:6px}.head-actions button{padding:7px 9px;font-size:12px}.settings-grid{grid-template-columns:1fr;gap:17px}.settings-rules .facts{grid-template-columns:1fr}.settings-accounts{padding:10px}}
+.batch-scope{margin:16px 0 0;border:0;border-top:1px solid var(--line);padding:14px 0 0}.batch-scope legend{font-size:13px;font-weight:600;padding:0 6px}.batch-tools{display:flex;align-items:center;justify-content:space-between;gap:10px}.batch-tools small{font-size:11px}.batch-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 16px;max-height:250px;overflow:auto}.queue-panel{margin:20px 0;padding:17px 20px}.queue-panel h2{font-size:16px}.queue-panel>p{font-size:12px;margin:5px 0 14px}.queue-batch{margin:14px 0 0;border-top:1px solid var(--line);padding-top:13px}.queue-head,.queue-row{display:flex;align-items:center;justify-content:space-between;gap:12px}.queue-head{margin-bottom:7px}.queue-head small{display:block;margin-top:2px}.queue-row{padding:10px 0;border-top:1px solid var(--line)}.queue-row strong,.queue-row small{display:block;overflow-wrap:anywhere}.queue-row strong{font-size:12px}.queue-row small{font-size:10px}.queue-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}.queue-meta .pill{font-size:10px}.job-banner{padding:10px 13px;margin-bottom:14px;border:1px solid var(--accent);border-radius:9px;background:var(--accent-soft);font-size:12px;white-space:pre-wrap}.scope-caption{font-size:12px;margin-top:9px}@media(max-width:650px){.batch-options{grid-template-columns:1fr}.queue-head,.queue-row{align-items:flex-start}.queue-meta{max-width:45%;gap:5px}.queue-panel{padding:14px}.queue-head strong{font-size:12px}}
 </style>
 <main>
- <header class="page-head"><div><div class="eyebrow">MODEL QUALITY</div><h1>账号质量探针</h1><p>选定账号，观察生成能力与模型行为指纹。</p></div><div class="head-actions"><button id="settings-open" type="button">探针设置</button><button id="refresh" type="button">↻ 刷新结果</button><button id="settings-back" type="button" hidden>返回测试</button></div></header>
+ <header class="page-head"><div><div class="eyebrow">MODEL QUALITY</div><h1>账号质量探针</h1><p>批量提交后台测试，关闭页面后继续执行并保存结果。</p></div><div class="head-actions"><button id="settings-open" type="button">探针设置</button><button id="refresh" type="button">↻ 刷新结果</button><button id="settings-back" type="button" hidden>返回测试</button></div></header>
  <section id="settings-panel" class="panel setup" aria-labelledby="settings-title" hidden>
   <div class="intro"><div><h2 id="settings-title">探针设置</h2><p>选择检测账号与探测方式，保存后生效且不重置已用预算。保存本身不执行测试；启用自动探测后会按计划调用模型并消耗预算。</p></div></div>
   <div id="settings-notice" class="notice" role="status" aria-live="polite">正在读取配置…</div>
@@ -19,7 +20,7 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);bo
    <fieldset id="settings-fields" disabled>
     <div class="settings-grid">
      <div class="field"><label class="check-label" for="settings-enabled"><input id="settings-enabled" type="checkbox">启用探针</label><small>关闭后暂停新探测，已有结果仍保留。</small></div>
-     <div class="field"><label for="settings-auto">探测方式</label><select id="settings-auto"><option value="false">手动触发</option><option value="true">自动 ModelTrace 复测</option></select><small>自动探测每题最多 20 秒；手动检测最多 110 秒。</small></div>
+     <div class="field"><label for="settings-auto">探测方式</label><select id="settings-auto"><option value="false">手动触发</option><option value="true">自动 ModelTrace 复测</option></select><small>后台单次测试最多570秒，完成后自动保存；关闭页面不会取消。</small></div>
      <div class="field"><label for="settings-model">ModelTrace 预期模型</label><select id="settings-model"></select><small>鹈鹕与糖果测试可在测试页单独选择模型。</small></div>
      <div class="field"><label for="settings-attempts">每日最多请求次数</label><input id="settings-attempts" type="number" min="1" max="10000" step="1" required><small>所有检测共用此预算，失败尝试也计入。</small></div>
      <div class="field"><label for="settings-output">每次预留输出 token</label><select id="settings-output"></select><small id="settings-token-cap"></small></div>
@@ -32,11 +33,14 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);bo
  </section>
  <div id="tests-panel">
  <section class="panel setup" aria-label="检测账号">
-  <div class="account-select"><div class="field"><label for="account">检测账号</label><select id="account"><option value="">正在读取账号…</option></select></div><div id="budget" class="budget"></div></div>
-  <div id="identity" class="identity"></div>
+  <div class="account-select"><div class="field"><label for="account">查看账号历史</label><select id="account"><option value="">正在读取账号…</option></select></div><div id="budget" class="budget"></div></div>
+  <div id="identity" class="identity"></div><fieldset class="batch-scope"><legend>新建批次 · 检测账号</legend><div class="batch-tools"><label class="check-label"><input id="batch-all" type="checkbox"> 全选可用账号</label><small id="batch-count"></small></div><div id="batch-accounts" class="batch-options"></div><p class="scope-caption">以下选择和测试参数只用于下次提交；已保存任务以任务卡片为准。服务端逐账号执行，结果自动保存。</p></fieldset>
  </section>
  <nav class="mode-bar" aria-label="检测方式"><div class="modes"><button id="mode-fingerprint" type="button" aria-pressed="true">ModelTrace 三题指纹</button><button id="mode-visual" type="button" aria-pressed="false">鹈鹕可视化测试</button><button id="mode-logic" type="button" aria-pressed="false">糖果逻辑测试</button></div><div id="mode-hint" class="mode-hint"></div></nav>
  <section id="visual-controls" class="panel visual-controls" aria-label="测试参数" hidden><div class="field"><label for="visual-model">请求模型</label><select id="visual-model"></select></div><div class="field"><label for="visual-effort">推理强度</label><select id="visual-effort"><option value="low">low · 低</option><option value="medium" selected>medium · 中</option><option value="high">high · 高</option></select></div><div class="field"><label for="visual-count">串行生成份数</label><select id="visual-count"><option value="1" selected>1 份</option><option value="2">2 份 · 并排对比</option><option value="3">3 份</option><option value="4">4 份</option></select></div></section>
+ <div id="worker-notice" class="notice" role="status" hidden></div>
+ <section class="panel queue-panel" aria-labelledby="queue-title"><h2 id="queue-title">后台测试任务</h2><p>任务保存后可关闭或刷新页面。重新打开自动读取进度与结果，不会重复提交。</p><div id="jobs"></div></section>
+ <div id="job-banner" class="job-banner" hidden></div>
  <div class="intro"><div><h2 id="work-title">三次挑战，一轮模型归因</h2><p id="work-description"></p></div><span id="work-status" class="pill neutral">等待检测</span></div>
  <div id="notice" class="notice" role="status" aria-live="polite">正在读取探针结果…</div>
  <details id="case-prompt" class="panel history" hidden><summary>查看本次测试的完整提示词</summary><pre id="case-prompt-text"></pre></details>
@@ -47,7 +51,7 @@ dialog{color:var(--text);background:var(--panel);border:1px solid var(--line);bo
  <div id="extra-results"></div>
  <details id="history" class="panel history"><summary id="history-title">历史证据摘要</summary><div id="history-body"></div></details>
  <p id="footnote" class="footnote"></p>
- <footer class="actions"><button id="download-all" type="button">↑ 导出全部结果</button><div class="action-right"><span id="action-caption" class="action-caption"></span><button id="stop" type="button" hidden>本题结束后停止</button><button id="start" class="primary" type="button">▷ 开始三题检测</button></div></footer>
+ <footer class="actions"><button id="download-all" type="button">↑ 导出全部结果</button><div class="action-right"><span id="action-caption" class="action-caption"></span><button id="start" class="primary" type="button">▷ 提交后台检测</button></div></footer>
  </div>
 </main>
 <dialog id="export-dialog"><div class="export-head"><div><h2>导出完整结果</h2><p id="export-filename"></p></div><button id="export-close" type="button" aria-label="关闭导出窗口">×</button></div><p>当前插件运行于隔离页面。复制下方内容后，可在本地保存为对应文件。</p><label for="export-content" class="export-label">完整文件内容</label><textarea id="export-content" readonly spellcheck="false"></textarea><div class="export-actions"><span id="export-note" role="status"></span><button id="export-copy" type="button" class="primary">复制全部内容</button></div></dialog>
@@ -58,6 +62,8 @@ const $=id=>document.getElementById(id);
 const phases={pending:'待准入',healthy:'正常',suspect:'疑似异常',cooling:'冷却中',recovering:'恢复检测中'};
 const verdicts={healthy:'行为符合预期',anomaly:'行为异常',unknown:'无法判定'};
 const errors={
+ queue_active:'已有批次或检测请求执行中，请完成后再提交',job_submission_conflict:'提交标识与请求内容冲突，请刷新任务后重试',job_interrupted_not_replayed:'后台执行被中断，已保留证据且不会自动重发',job_configuration_changed:'配置已变更，任务已取消',job_cancelled:'任务已取消',job_not_found:'任务不存在或已超出保留范围',invalid_job_request:'批次参数无效，请检查账号和份数',invalid_job_model_or_effort:'请求模型或推理强度不受支持',daily_budget_exhausted:'今日探针预算已用尽',no_due_account:'账号未到复测时间或不在可探测范围',account_not_managed:'账号已不在纳管范围',account_busy:'该账号已有请求执行中',
+
  model_event_buffer_too_large:'流式中间事件超过缓存上限，本次未保存完整输出',model_stream_cleanup_pending:'正在等待宿主完成取消收尾',model_stream_close_failed:'宿主未确认模型流关闭',
  probe_timeout:'等待完整响应超时',logic_timeout:'逻辑测试超时，无法判定',visual_timeout:'可视化生成超时，未取得完整 HTML',upstream_or_host_execution_failed:'上游或宿主执行失败',
  invalid_or_unscorable_output:'输出格式不符合指纹要求',wire_error_or_incomplete:'上游响应错误或未完整结束',insufficient_valid_answers:'六次尝试后仍未收齐三份有效输出',fingerprint_batch_expired:'本轮超过30分钟，证据已过期',
@@ -66,8 +72,10 @@ const errors={
  invalid_wire_json:'上游返回的 JSON 无法解析',invalid_wire_sse:'上游返回的事件流编码无效',unvalidated_wire_body:'上游响应格式无法校验',non_text_response:'模型返回了工具调用或非文本内容，无法作为完整文本证据',
  ambiguous_output:'模型结束响应后仍返回内容，无法确认完整输出',incomplete_or_duplicate_completion:'模型响应未正常结束或出现重复完成事件',missing_completed_text:'未收到完整的文本响应',invalid_output_encoding:'模型输出编码无效'
 };
-const stoppedLabels={daily_budget_exhausted:'今日探针预算已用尽，已保存的证据仍可查看。',no_due_account:'账号未到复测时间或不在可探测范围，未发起请求。',disabled:'插件配置未启用。',fingerprint_batch_expired:'本轮超过30分钟，证据已过期；到期后可开始新一轮。'};
-let snapshot=null,busy=false,running=false,stopRequested=false,selectedId='',mode='fingerprint',active=null,clock=null;
+let snapshot=null,busy=false,selectedId='',mode='fingerprint';
+let jobsState={batches:[],worker_supported:false},batchAccounts=new Set(),scopeInitialized=false,selectedJobId='',jobDetail=null,jobSignature='',pollTimer=null,polling=false,pageClosed=false,pendingSubmission=null;
+const jobStates={queued:'排队中',running:'执行中',completed:'已完成',error:'失败',unknown:'无法判定',skipped:'已跳过',cancelled:'已取消'};
+const kindLabels={fingerprint:'ModelTrace 三题指纹',visual:'鹈鹕可视化',logic:'糖果逻辑'};
 let settingsOpen=false,settingsData=null,settingsAccounts=new Set();
 const settingsErrors={settings_conflict:'配置已被其他页面修改。请重新读取配置后再保存。',settings_busy:'有探针正在运行。请等待当前请求完成后保存。',settings_account_invalid:'检测账号已失效或不可选择。请重新读取并检查账号。',invalid_settings_request:'配置填写不完整，请检查各字段。',invalid_configuration:'配置数值超出允许范围。',model_not_in_bank_or_no_accounts:'启用探针时需要选择账号与支持的模型。',settings_read_failed:'读取配置失败，请重试。',settings_save_failed:'宿主未能保存配置，请重试。',settings_response_invalid:'宿主返回的保存结果无法确认，请重新读取配置。',settings_instance_missing:'当前插件实例不可用，请从插件页重新打开。',settings_encode:'配置编码失败，请重新读取配置。'};
 const visualResults=new Map(),logicResults=new Map();
@@ -77,12 +85,12 @@ function caseResults(kind=mode){return kind==='logic'?logicResults:visualResults
 function assessmentLabel(attempt,kind){const verdict=attempt.assessment?.verdict;return verdict==='pass'?'通过':verdict==='fail'?'未通过／疑似降智':kind==='visual'&&attempt.status==='completed'&&!attempt.error?'待人工判定':'无法判定';}
 function text(tag,value,cls){const e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e;}
 function date(ms){return ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}):'—';}
-function timeoutSeconds(){return Math.floor((snapshot?.visual_timeout_ms||110000)/1000);}
 function probability(n){return Number.isFinite(n)?(n>0&&n<0.0001?'<0.01%':(n*100).toFixed(2)+'%'):'—';}
 function seconds(ms){return Number.isFinite(ms)?(ms/1000).toFixed(1)+' s':'—';}
 function errorLabel(value){return value?value.split('; ').map(code=>errors[code]||code).join('；'):'未取得完整输出';}
 function accountLabel(a){return a.email||a.name||a.account_id;}
-function currentAccount(){return snapshot?.accounts.find(a=>a.account_id===selectedId);}
+function currentAccount(){const account=snapshot?.accounts.find(a=>a.account_id===selectedId);if(jobDetail&&jobDetail.item.id===selectedJobId&&jobDetail.item.account_id===selectedId&&jobDetail.kind===mode){const saved=jobDetail.results?.at(-1);return {...(account||{account_id:selectedId,name:selectedId,quality:{phase:'pending'},history:[]}),batch:mode==='fingerprint'?saved?.batch:null,quality:account?.quality||saved?.quality||{phase:'pending'}};}return account;}
+function displayedManualResults(account){return jobDetail&&jobDetail.item.id===selectedJobId&&jobDetail.item.account_id===account?.account_id&&jobDetail.kind===mode?jobDetail.results||[]:caseResults().get(account?.account_id)||[];}
 function validCount(batch){return (batch?.attempts||[]).filter(a=>!a.error&&a.number_count!=null).length;}
 function visualCounts(results){const completed=results.filter(r=>r.status==='completed'&&!r.error).length;return {completed,failed:results.length-completed};}
 function evidenceKind(sample){return sample.score?.sample_count===3||sample.challenge_id?.includes('-batch-')?'三题流程记录':'旧版单题记录';}
@@ -144,7 +152,7 @@ async function saveSettings(event){
 }
 function preserveEvidence(next){
  for(const a of next.accounts||[]){const old=snapshot?.accounts.find(x=>x.account_id===a.account_id);
-  if(!running)for(const kind of ['visual','logic']){const cache=caseResults(kind),cached=cache.get(a.account_id)||[];cache.set(a.account_id,(a[kind+'_tests']||[]).map(v=>{const full=cached.find(c=>c.id===v.id);return full?{...full,...v}:v;}));}
+  for(const kind of ['visual','logic']){const cache=caseResults(kind),cached=cache.get(a.account_id)||[];cache.set(a.account_id,(a[kind+'_tests']||[]).map(v=>{const full=cached.find(c=>c.id===v.id);return full?{...full,...v}:v;}));}
   if(old?.batch?.started_at_ms===a.batch?.started_at_ms&&a.batch){
    for(const item of a.batch.attempts){const previous=old.batch.attempts.find(p=>p.challenge_id===item.challenge_id&&p.at_ms===item.at_ms);if(previous){if(Object.hasOwn(previous,'prompt'))item.prompt=previous.prompt;if(Object.hasOwn(previous,'output'))item.output=previous.output;}}
   }
@@ -152,22 +160,10 @@ function preserveEvidence(next){
  snapshot=next;
 }
 function budgetUsage(){const b=snapshot.budget,now=Date.now(),today=b&&b.day>=Math.floor(now/86400000);return {attempts:today?b.attempts:0,spent:today?b.reserved_output_tokens:0};}
-function unavailable(account,visual=false){
- const s=snapshot,limits=s.probe_limits||{},usage=budgetUsage(),q=account?.quality||{};
- if(!account)return '请先在插件设置中配置检测账号';
- if(!s.enabled)return '插件配置未启用';
- if(!account.enabled)return '账号已禁用';
- if(!s.key_scopes_ok||!s.probe_budget_ok)return 'Key 范围或预算校验未通过';
- if(!s.maintenance?.ok)return '请先处理维护异常';
- if(usage.attempts>=limits.max_daily_attempts||usage.spent+(limits.max_output_tokens||0)>limits.max_daily_output_tokens)return '今日探针预算已用尽';
- if(q.lease_until_ms>Date.now())return '该账号已有探针执行中';
- if(!visual&&q.next_probe_at_ms>Date.now())return '下次可检测：'+date(q.next_probe_at_ms);
- return null;
-}
 function refreshAccountPicker(){
  const select=$('account');select.replaceChildren();
  for(const a of snapshot.accounts){const option=text('option',accountLabel(a)+(a.name&&a.email?' · '+a.name:''));option.value=a.account_id;select.append(option);}
- if(!snapshot.accounts.some(a=>a.account_id===selectedId))selectedId=snapshot.accounts[0]?.account_id||'';
+ if(!snapshot.accounts.some(a=>a.account_id===selectedId)){if(selectedJobId){const option=text('option',selectedId+' · 历史任务');option.value=selectedId;select.append(option);}else selectedId=snapshot.accounts[0]?.account_id||'';}
  if(!snapshot.accounts.length){const option=text('option','尚未配置纳管账号');option.value='';select.append(option);}
  select.value=selectedId;select.disabled=busy||!selectedId;
 }
@@ -180,7 +176,7 @@ function renderIdentity(account){
 function placeholder(title,message,index,waiting=false){
  const card=text('article','','panel output-card');const head=text('div','','output-head'),titleBox=text('div','','output-title');titleBox.append(text('span',String(index),'number'),text('h3',title));head.append(titleBox,text('span',waiting?'正在生成':'等待开始','status-text'));
  const body=text('div','','placeholder');body.append(text('div',waiting?'':'↗',waiting?'loading-dot':'placeholder-mark'),text('strong',waiting?'等待完整模型输出':'准备就绪'),text('p',message));
- if(waiting){const timer=text('span','0.0 s','running-clock');timer.dataset.elapsed='true';body.append(timer);}card.append(head,body);return card;
+ if(waiting)body.append(text('small','后台单次最多570秒，完成后自动保存。'));card.append(head,body);return card;
 }
 function exportResult(value,filename){
  $('export-content').value=typeof value==='string'?value:JSON.stringify(value,null,2);$('export-filename').textContent=filename;$('export-note').textContent='保留完整原文与请求信息';$('export-dialog').showModal();
@@ -230,25 +226,25 @@ function renderScore(batch){
  const all=document.createElement('details');all.className='all-ranks';all.append(text('summary','查看全部 '+(score.candidates||[]).length+' 个候选模型'));const list=document.createElement('ol');for(const c of score.candidates||[])list.append(text('li',c.model+' · '+probability(c.probability)));all.append(list);right.append(all);panel.append(left,right);
 }
 function renderFingerprint(account){
- const batch=running&&active?.mode==='fingerprint'&&active.fresh?null:account?.batch,count=validCount(batch),attempts=batch?.attempts||[],valid=attempts.filter(a=>!a.error&&a.number_count!=null),failed=attempts.filter(a=>a.error||a.number_count==null);
+ const batch=account?.batch,count=validCount(batch),attempts=batch?.attempts||[],valid=attempts.filter(a=>!a.error&&a.number_count!=null),failed=attempts.filter(a=>a.error||a.number_count==null);
  $('work-title').textContent='三次挑战，一轮模型归因';$('work-description').textContent='同一账号独立生成三份完整数字序列，再聚合计算 ModelTrace 指纹。概率仅代表固定参考库内的行为相似度，不能证明真实模型身份。';
  $('work-status').textContent=batch?.completed_at_ms?(batch.score?'本轮已完成':'本轮无法判定'):count+' / 3 份有效输出';
- $('progress').hidden=false;$('progress').replaceChildren();for(let i=1;i<=3;i++){const step=text('div','','step'+(i<=count?' done':running&&i===count+1?' active':''));step.append(text('strong',i<=count?'✓':String(i)),text('span',i<=count?'完整输出已收集':'独立挑战 '+i));$('progress').append(step);}
+ $('progress').hidden=false;$('progress').replaceChildren();for(let i=1;i<=3;i++){const step=text('div','','step'+(i<=count?' done':jobIsRunning()&&i===count+1?' active':''));step.append(text('strong',i<=count?'✓':String(i)),text('span',i<=count?'完整输出已收集':'独立挑战 '+i));$('progress').append(step);}
  renderScore(batch);
  if(batch){const info=text('p','本轮已尝试 '+attempts.length+' / 6 次 · '+date(batch.started_at_ms)+' 开始');$('evidence-tools').append(info);if(attempts.some(a=>!Object.hasOwn(a,'output'))){const load=text('button','加载完整证据','small secondary');load.disabled=busy;load.onclick=()=>loadEvidence(account);$('evidence-tools').append(load);}}
- if(account){for(let i=0;i<3;i++)$('outputs').append(valid[i]?outputCard(account,valid[i],i+1):placeholder('挑战输出 '+(i+1),'每次使用独立挑战，完整输出通过校验后才纳入本轮指纹。',i+1,running&&mode==='fingerprint'&&i===count));}
+ if(account){for(let i=0;i<3;i++)$('outputs').append(valid[i]?outputCard(account,valid[i],i+1):placeholder('挑战输出 '+(i+1),'每次使用独立挑战，完整输出通过校验后才纳入本轮指纹。',i+1,jobIsRunning()&&mode==='fingerprint'&&i===count));}
  if(failed.length){const details=document.createElement('details');details.className='attempts-failed';details.append(text('summary',failed.length+' 次未纳入指纹的尝试（仍计入日预算）'));const grid=text('div','','output-grid');for(const a of failed)grid.append(outputCard(account,a,attempts.indexOf(a)+1));details.append(grid);$('extra-results').append(details);}
  if(batch?.error)$('extra-results').append(text('p',errorLabel(batch.error),'error-text'));
  $('footnote').textContent='三份有效完整输出才生成一轮结果，每轮最多尝试六次。超时与无效输出不会判为降智；冷却与恢复依照已配置的复测策略。原文保留最近一轮，历史保留最近 12 条摘要。';
 }
 function renderManual(account){
- const visual=mode==='visual',results=caseResults().get(account?.account_id)||[],counts=visualCounts(results);
+ const visual=mode==='visual',results=displayedManualResults(account),counts=visualCounts(results);
  $('work-title').textContent=visual?'鹈鹕骑自行车 · 绘图能力测试':'糖果数量 · 逻辑能力测试';
  $('work-description').textContent=visual?'使用指定提示词生成 HTML / SVG 2D 动画，人工检查绘图是否正常；异常时可标记未通过／疑似降智。':'按原题发送糖果数量与形状条件。标准答案为 21（9 颗圆形＋12 颗五角星）；明确回答其他数量时标记未通过／疑似降智。';
  $('work-status').textContent=results.length?results.length+' 份结果 · 完成 '+counts.completed+' / 未完成 '+counts.failed:'等待生成';$('progress').hidden=true;$('score').hidden=true;
- const count=running&&active?.mode===mode?active.total:Number($('visual-count').value||1),displayCount=Math.max(results.length,count);
- for(let i=0;i<displayCount;i++)$('outputs').append(results[i]?outputCard(account,results[i],i+1,mode):placeholder('输出 '+(i+1),visual?'生成鹈鹕骑自行车的 HTML / SVG 2D 动画，保留完整输出供人工判断。':'固定请求当前账号，保存完整解答并识别最终答案，与 21 比较。',i+1,running&&i===results.length));
- if(results.length){$('evidence-tools').append(text('p','最近 '+results.length+' 份结果 · '+(running?'正在串行生成':'已保存在服务端，可导出完整提示词、输出和请求信息')));if(results.some(a=>!Object.hasOwn(a,'output'))){const load=text('button','加载完整'+caseLabels[mode]+'结果','small secondary');load.disabled=busy;load.onclick=()=>loadManualEvidence(account);$('evidence-tools').append(load);}}
+ const count=selectedJobId&&jobDetail?jobDetail.item.total:Number($('visual-count').value||1),displayCount=Math.max(results.length,count);
+ for(let i=0;i<displayCount;i++)$('outputs').append(results[i]?outputCard(account,results[i],i+1,mode):placeholder('输出 '+(i+1),visual?'生成鹈鹕骑自行车的 HTML / SVG 2D 动画，保留完整输出供人工判断。':'固定请求当前账号，保存完整解答并识别最终答案，与 21 比较。',i+1,jobIsRunning()&&i===results.length));
+ if(results.length){$('evidence-tools').append(text('p','最近 '+results.length+' 份结果 · '+(jobIsRunning()?'服务端正在生成，可关闭页面':'已保存在服务端，可导出完整提示词、输出和请求信息')));if(results.some(a=>!Object.hasOwn(a,'output'))){const load=text('button','加载完整'+caseLabels[mode]+'结果','small secondary');load.disabled=busy;load.onclick=()=>loadManualEvidence(account);$('evidence-tools').append(load);}}
  $('footnote').textContent=(visual?'绘图效果由人工判定；图像预览不执行 JavaScript，不能据此判断依赖脚本的动画异常。':'超时、请求失败或没有明确最终答案时显示“无法判定”，不计为降智。')+' 单题结果不证明模型身份，也不直接触发账号冷却；自动冷却仍采用 ModelTrace 复测策略。';
 }
 function render(){
@@ -257,20 +253,73 @@ function render(){
  for(const key of ['fingerprint','visual','logic']){$('mode-'+key).setAttribute('aria-pressed',String(mode===key));$('mode-'+key).disabled=busy;}
  $('case-prompt').hidden=mode==='fingerprint';$('case-prompt-text').textContent=casePrompts[mode]||'';
  $('visual-controls').hidden=mode==='fingerprint';for(const id of ['visual-model','visual-effort','visual-count'])$(id).disabled=busy;
- $('mode-hint').textContent=mode==='fingerprint'?'指纹目标：'+snapshot.model:mode==='visual'?'人工判定绘图效果':'标准答案 21 · 自动判分';
+ $('mode-hint').textContent=mode==='fingerprint'?'指纹目标：'+(selectedJobId&&jobDetail?.kind==='fingerprint'?jobDetail.model:snapshot.model):mode==='visual'?'人工判定绘图效果':'标准答案 21 · 自动判分';
  $('outputs').replaceChildren();$('extra-results').replaceChildren();$('evidence-tools').replaceChildren();
  if(mode==='fingerprint')renderFingerprint(account);else renderManual(account);
  if(!account){$('outputs').replaceChildren();const empty=text('div','','panel empty-state');empty.append(text('h3','先添加一个检测账号'),text('p','点击上方“探针设置”勾选账号并保存。'));$('extra-results').append(empty);}
  const history=account?.history||[];$('history-title').textContent='最近 '+history.length+' 条历史证据摘要';$('history-body').replaceChildren(text('pre',JSON.stringify(history.map(s=>({record_type:evidenceKind(s),...s})),null,2)));$('history').hidden=mode!=='fingerprint';
- const reason=unavailable(account,mode!=='fingerprint');$('start').disabled=busy||Boolean(reason);$('start').textContent=running?'检测进行中…':mode!=='fingerprint'?'▷ 开始'+caseLabels[mode]+'测试':account?.batch&&!account.batch.completed_at_ms?'▷ 继续本轮三题':'▷ 开始三题检测';
- $('refresh').disabled=busy;$('download-all').disabled=busy||!(mode!=='fingerprint'?(caseResults().get(selectedId)||[]).length:account?.batch?.attempts.length);$('stop').hidden=!running;$('stop').disabled=stopRequested;$('stop').textContent=stopRequested?'将于本题结束后停止':'本题结束后停止';
- $('action-caption').textContent=running?(stopRequested?'当前请求继续完成并保存，随后停止。':'请保持页面打开 · 当前请求已固定账号'):reason||(mode==='fingerprint'?'每题最多等待110秒，失败尝试同样计费。':'串行请求 '+$('visual-count').value+' 份输出，使用探针全局预算。');
- updateElapsed();
+ renderBatchAccounts();const reason=submissionUnavailable();$('start').disabled=busy||Boolean(reason);$('start').textContent=busy?'正在处理…':'▷ 提交 '+batchAccounts.size+' 个账号后台检测';
+ $('refresh').disabled=busy;$('download-all').disabled=busy||!(selectedJobId?jobDetail?.results?.length:mode!=='fingerprint'?displayedManualResults(account).length:account?.batch?.attempts.length);
+ $('action-caption').textContent=reason||'提交后可关闭页面 · '+(mode==='fingerprint'?'每账号一轮三题，最多六次尝试':'每账号 '+$('visual-count').value+' 份输出')+' · 共用探针预算';
+ renderJobs();
 }
-function updateElapsed(){if(!active)return;for(const el of document.querySelectorAll('[data-elapsed]'))el.textContent='已等待 '+seconds(Date.now()-active.started);}
-function beginRun(account,kind,total){busy=true;running=true;stopRequested=false;active={account_id:account.account_id,mode:kind,total,started:Date.now(),fresh:kind==='fingerprint'&&Boolean(account.batch?.completed_at_ms)};clock=setInterval(updateElapsed,250);render();}
-async function endRun(){clearInterval(clock);clock=null;active=null;running=false;try{preserveEvidence(await request('GET','status'));}catch(e){notice($('notice').textContent+'\n刷新失败：'+e.message);}busy=false;render();}
-async function refresh(){if(busy)return;busy=true;settingsNavigation();if(snapshot)render();$('refresh').disabled=true;try{preserveEvidence(await request('GET','status'));populateVisualModels();notice('结果已更新：'+date(Date.now()));}catch(e){notice('读取失败：'+e.message);}finally{busy=false;settingsNavigation();if(snapshot)render();else $('refresh').disabled=false;}}
+function jobIsRunning(){return Boolean(selectedJobId&&jobDetail?.item.status==='running');}
+function activeBatch(){return jobsState.batches.find(b=>b.status==='queued'||b.status==='running');}
+function submissionUnavailable(){
+ if(!jobsState.worker_supported)return '后台执行尚未就绪，请稍后刷新；需支持维护 v2 的 CPS';
+ if(activeBatch())return '已有批次在执行，完成或取消后可提交下一批';
+ if(!batchAccounts.size)return '请勾选本次要检测的账号';
+ const selected=snapshot.accounts.filter(a=>batchAccounts.has(a.account_id));
+ if(selected.length!==batchAccounts.size||selected.some(a=>!a.enabled))return '部分选中账号已不可用，请重新选择';
+ if(!snapshot.enabled)return '插件配置未启用';
+ if(!snapshot.key_scopes_ok||!snapshot.probe_budget_ok)return 'Key 范围或预算校验未通过';
+ if(!snapshot.maintenance?.ok)return '请先处理维护异常';
+ const usage=budgetUsage(),limits=snapshot.probe_limits||{};
+ if(usage.attempts>=limits.max_daily_attempts||usage.spent+(limits.max_output_tokens||0)>limits.max_daily_output_tokens)return '今日探针预算已用尽';
+ return null;
+}
+function renderBatchAccounts(){
+ const managed=new Set(snapshot.accounts.filter(a=>a.enabled).map(a=>a.account_id));batchAccounts=new Set([...batchAccounts].filter(id=>managed.has(id)));
+ if(!scopeInitialized){scopeInitialized=true;if(managed.has(selectedId))batchAccounts.add(selectedId);}
+ const box=$('batch-accounts');box.replaceChildren();for(const a of snapshot.accounts){const row=text('label','','account-option'),check=document.createElement('input'),info=document.createElement('span');check.type='checkbox';check.value=a.account_id;check.checked=batchAccounts.has(a.account_id);check.disabled=busy||!a.enabled;check.onchange=()=>{if(check.checked)batchAccounts.add(a.account_id);else batchAccounts.delete(a.account_id);render();};info.append(text('strong',accountLabel(a)),text('small',a.account_id,'mono'));if(!a.enabled)info.append(text('small','账号已禁用'));row.append(check,info);box.append(row);}
+ $('batch-count').textContent='已选 '+batchAccounts.size+' / '+managed.size+' 个可用账号';$('batch-all').checked=managed.size>0&&batchAccounts.size===managed.size;$('batch-all').indeterminate=batchAccounts.size>0&&batchAccounts.size<managed.size;$('batch-all').disabled=busy||!managed.size;
+}
+function renderJobs(){
+ const box=$('jobs');box.replaceChildren();box.append(text('p','保留最近 '+(jobsState.history_limit||100)+' 个账号任务；每个任务的完整输出可独立查看。'));$('worker-notice').hidden=jobsState.worker_supported;$('worker-notice').textContent=jobsState.worker_supported?'':'后台执行尚未就绪，请稍后刷新；需支持维护 v2 的 CPS。已有结果仍可查看，新任务提交已停用。';
+ if(!jobsState.batches.length)box.append(text('p','暂无后台任务。选择账号和测试方式后提交。'));
+ for(const batch of jobsState.batches){const block=text('section','','queue-batch'),head=text('div','','queue-head'),info=document.createElement('div');info.append(text('strong',kindLabels[batch.kind]+' · '+(jobStates[batch.status]||batch.status)),text('small',date(batch.created_at_ms)+' · '+batch.model+' · '+batch.items.length+' 个账号'));head.append(info);
+  if(batch.status==='queued'||batch.status==='running'){const cancel=text('button','取消待执行项','small');cancel.disabled=busy;cancel.onclick=()=>cancelBatch(batch.id);head.append(cancel);}block.append(head);
+  for(const item of batch.items){const a=snapshot.accounts.find(a=>a.account_id===item.account_id)||{account_id:item.account_id},row=text('div','','queue-row'),identity=document.createElement('div'),meta=text('div','','queue-meta');identity.append(text('strong',accountLabel(a)),text('small',item.account_id,'mono'));if(item.error)identity.append(text('small',errorLabel(item.error),'error-text'));meta.append(text('span',(jobStates[item.status]||item.status)+' · '+item.completed+' / '+item.total,'pill'+(['error','unknown'].includes(item.status)?' warn':' neutral')));const open=text('button',selectedJobId===item.id?'正在查看':'查看结果','small');open.disabled=busy;open.onclick=()=>selectJob(item.id);meta.append(open);row.append(identity,meta);block.append(row);}box.append(block);
+ }
+ $('job-banner').hidden=!selectedJobId;if(selectedJobId){const found=findJob(selectedJobId);$('job-banner').textContent=found?'当前查看后台任务 · '+kindLabels[found.batch.kind]+' · '+found.item.account_id+' · '+found.batch.model+' / '+found.batch.reasoning_effort+'\n'+(jobStates[found.item.status]||found.item.status)+' '+found.item.completed+' / '+found.item.total+' · 结果自动保存；刷新不会重新提交。':'该任务已超过保存范围，请查看账号历史。';}
+}
+function findJob(id){for(const batch of jobsState.batches){const item=batch.items.find(i=>i.id===id);if(item)return {batch,item};}return null;}
+function detailSignature(item){return JSON.stringify([item.id,item.status,item.completed,item.completed_at_ms,item.error]);}
+async function readJob(id){
+ const expected=findJob(id);if(!expected)return;
+ const detail=await request('POST','job',{id});if(detail.item?.id!==id||detail.item.account_id!==expected.item.account_id||detail.kind!==expected.batch.kind||!Array.isArray(detail.results)||detail.results.some(result=>result.account_id!==expected.item.account_id))throw new Error('任务结果与目标账号不一致');
+ if(selectedJobId!==id)return;jobDetail=detail;jobSignature=detailSignature(expected.item);
+}
+async function selectJob(id){if(busy)return;const found=findJob(id);if(!found)return;busy=true;selectedJobId=id;selectedId=found.item.account_id;mode=found.batch.kind;jobDetail=null;jobSignature='';render();try{await readJob(id);notice('已读取已保存任务结果，不会发起模型请求。');}catch(e){notice('读取任务失败：'+errorLabel(e.message));}finally{busy=false;render();}}
+async function syncJobs(chooseInitial=false){
+ const next=await request('GET','jobs');if(!Array.isArray(next.batches))throw new Error('后台任务列表格式无效');jobsState=next;
+ if(selectedJobId&&!findJob(selectedJobId)){selectedJobId='';jobDetail=null;jobSignature='';}
+ if(chooseInitial&&!selectedJobId&&next.batches[0]?.items[0]){const first=next.batches.find(b=>b.status==='queued'||b.status==='running')||next.batches[0];selectedJobId=first.items[0].id;selectedId=first.items[0].account_id;mode=first.kind;if(first.status==='queued'||first.status==='running'){batchAccounts=new Set(first.items.map(item=>item.account_id));scopeInitialized=true;$('visual-count').value=String(first.repetitions);$('visual-model').value=first.model;$('visual-effort').value=first.reasoning_effort;}}
+ const selected=findJob(selectedJobId);if(selected&&(['queued','running'].includes(selected.item.status)||detailSignature(selected.item)!==jobSignature))await readJob(selectedJobId);
+}
+function schedulePoll(){clearTimeout(pollTimer);if(!pageClosed&&!settingsOpen)pollTimer=setTimeout(pollJobs,5000);}
+async function pollJobs(){if(pageClosed||settingsOpen)return;if(busy||polling||document.hidden){schedulePoll();return;}polling=true;try{await syncJobs();preserveEvidence(await request('GET','status'));render();}catch(e){notice('后台任务读取暂时失败：'+e.message+'。已提交任务继续由服务端执行。');}finally{polling=false;schedulePoll();}}
+async function refresh(){if(busy)return;const initial=snapshot===null;busy=true;settingsNavigation();if(snapshot)render();$('refresh').disabled=true;try{preserveEvidence(await request('GET','status'));populateVisualModels();await syncJobs(initial);notice('已读取服务端进度与结果：'+date(Date.now())+'。没有提交新测试。');}catch(e){notice('读取失败：'+e.message);}finally{busy=false;settingsNavigation();if(snapshot)render();else $('refresh').disabled=false;schedulePoll();}}
+function newSubmissionId(){if(typeof crypto.randomUUID==='function')return crypto.randomUUID();const bytes=crypto.getRandomValues(new Uint8Array(16));bytes[6]=(bytes[6]&15)|64;bytes[8]=(bytes[8]&63)|128;const hex=Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');return [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-');}
+async function submitJobs(){
+ if(busy||submissionUnavailable())return;const draft={account_ids:[...batchAccounts],kind:mode,repetitions:mode==='fingerprint'?1:Number($('visual-count').value||1),...(mode==='fingerprint'?{}:{model:$('visual-model').value,reasoning_effort:$('visual-effort').value})};
+ if(!pendingSubmission||JSON.stringify(pendingSubmission.draft)!==JSON.stringify(draft))pendingSubmission={id:newSubmissionId(),draft};
+ busy=true;render();notice('正在保存后台批次…');
+ try{const result=await request('POST','jobs',{submission_id:pendingSubmission.id,...draft});if(result.status!=='queued'||!result.batch?.id||!result.job_id||result.job_id!==result.batch.id)throw new Error('未取得任务保存确认');pendingSubmission=null;selectedJobId='';jobDetail=null;jobSignature='';await syncJobs();const first=findJob(result.batch.items?.[0]?.id);if(!first)throw new Error('已提交批次尚未出现在任务列表，请刷新确认');selectedJobId=first.item.id;selectedId=first.item.account_id;mode=first.batch.kind;await readJob(selectedJobId);notice('批次已保存。可关闭或刷新页面，服务端会依次执行并保留结果。');}
+ catch(e){notice('提交结果尚未确认：'+errorLabel(e.message)+'。请先刷新查看任务；重新点击相同提交将使用同一提交标识。');}
+ finally{busy=false;render();schedulePoll();}
+}
+async function cancelBatch(id){if(busy)return;busy=true;render();try{await request('POST','job-cancel',{id});await syncJobs();notice('已取消待执行项；正在执行的请求会完成并保存，不会被中途截断。');}catch(e){notice('取消未确认：'+errorLabel(e.message));}finally{busy=false;render();}}
 function populateVisualModels(){
  const select=$('visual-model'),previous=select.value;select.replaceChildren();for(const name of snapshot.visual_models||[snapshot.model]){const option=text('option',name);option.value=name;select.append(option);}const models=snapshot.visual_models||[snapshot.model];select.value=models.includes(previous)?previous:models.includes('gpt-6-astra')?'gpt-6-astra':snapshot.model;
 }
@@ -279,40 +328,6 @@ async function loadEvidence(account){
  try{await fetchEvidence(account);notice('完整证据已加载；此次读取不发起模型请求。');}catch(e){notice('读取完整证据失败：'+e.message);}finally{busy=false;render();}
 }
 async function fetchEvidence(account){const r=await request('POST','evidence',{account_id:account.account_id});if(r.account_id!==account.account_id)throw new Error('结果账号不一致');const current=snapshot.accounts.find(a=>a.account_id===r.account_id);if(current){current.batch=r.batch;current.history=r.history;current.quality=r.quality;current.last_sample=r.history.at(-1)||null;}return r;}
-async function probe(account){
- if(busy)return;beginRun(account,'fingerprint',3);
- try{
-  for(let i=0;i<6;i++){
-   const current=snapshot.accounts.find(a=>a.account_id===account.account_id);active.started=Date.now();render();notice('正在检测 '+accountLabel(account)+' · 已收集 '+(active.fresh?0:validCount(current?.batch))+' / 3 份有效输出。本题最多等待110秒。',true);
-   const r=await request('POST','probe',{account_id:account.account_id});
-   if(r.account_id&&r.account_id!==account.account_id)throw new Error('宿主返回的账号与本次目标不一致');
-   if(r.batch)active.fresh=false;
-   if(current){if(r.batch)current.batch=r.batch;if(r.quality)current.quality=r.quality;if(r.sample){current.last_sample=r.sample;current.history=[...(current.history||[]),r.sample].slice(-12);}}render();
-   if(r.status==='batch_completed'){notice('三题检测结束：'+(verdicts[r.batch?.verdict]||'无法判定')+(r.batch?.error?'；'+errorLabel(r.batch.error):''));break;}
-   if(r.status!=='challenge_recorded'){notice(stoppedLabels[r.status]||r.status);break;}
-   if(stopRequested){notice('已停止后续挑战；本题及此前输出已保存，可在30分钟内继续本轮。');break;}
-  }
- }catch(e){notice('检测中断：'+e.message+'。已保存的输出可在刷新后查看；核对执行状态后可继续本轮。');}
- finally{await endRun();}
-}
-async function manualProbe(account){
- if(busy)return;const kind=mode,cache=caseResults(kind),label=caseLabels[kind],model=$('visual-model').value,reasoning_effort=$('visual-effort').value,total=Number($('visual-count').value||1);
- beginRun(account,kind,total);cache.set(account.account_id,[]);render();
- try{
-  for(let i=0;i<total;i++){
-   active.started=Date.now();render();notice('正在为 '+accountLabel(account)+' 生成第 '+(i+1)+' / '+total+' 份'+label+'输出 · '+model+' / '+reasoning_effort+'。每份最多等待'+timeoutSeconds()+'秒。',true);
-   const r=await request('POST',kind,{account_id:account.account_id,model,reasoning_effort});
-   if(r.account_id&&r.account_id!==account.account_id)throw new Error('宿主返回的账号与本次目标不一致');
-   if(r.status!==kind+'_recorded'){notice(stoppedLabels[r.status]||(r.status==='account_busy'?'该账号已有探针执行中，未发起额外请求。':r.status));break;}
-   const sample=r[kind+'_sample'];if(!sample||sample.account_id!==account.account_id)throw new Error('结果缺少目标账号信息');
-   cache.get(account.account_id).push(sample);render();
-   const counts=visualCounts(cache.get(account.account_id)),summary='已完成 '+counts.completed+' / '+(i+1)+' 份'+(counts.failed?'，'+counts.failed+' 份未完成':'');
-   if(stopRequested){notice('已停止后续生成；'+summary+'。当前请求结果已保存。');break;}
-   if(i===total-1)notice(label+'测试结束：'+summary+'。'+(kind==='logic'?'最新判定：'+assessmentLabel(sample,kind)+'。':counts.failed?(counts.completed?'完整结果可查看预览；未完成结果请查看错误信息。':'请在结果卡片查看失败原因，无法判定绘图质量。'):'可查看预览与完整源码，标记绘图是否正常。'));
-  }
- }catch(e){notice(label+'测试中断：'+e.message+'。可刷新后加载已保存的完整结果。');}
- finally{await endRun();}
-}
 async function loadManualEvidence(account){
  if(busy)return;busy=true;render();notice('正在读取 '+accountLabel(account)+' 的完整'+caseLabels[mode]+'结果…');
  try{await fetchManualEvidence(account);notice('完整结果已加载；此次读取不发起模型请求。');}catch(e){notice('读取结果失败：'+e.message);}finally{busy=false;render();}
@@ -320,18 +335,20 @@ async function loadManualEvidence(account){
 async function fetchManualEvidence(account,kind=mode){const r=await request('POST',kind+'-evidence',{account_id:account.account_id});if(r.account_id!==account.account_id)throw new Error('结果账号不一致');caseResults(kind).set(account.account_id,r[kind+'_tests']||[]);return r;}
 async function reviewVisual(account,sample,verdict){
  if(busy)return;busy=true;render();
- try{const r=await request('POST','visual-review',{account_id:account.account_id,sample_id:sample.id,verdict});if(r.account_id!==account.account_id||r.visual_sample?.id!==sample.id)throw new Error('返回的判定与目标样本不一致');const results=visualResults.get(account.account_id)||[],index=results.findIndex(v=>v.id===sample.id);if(index>=0)results[index]=r.visual_sample;notice('人工判定已保存：'+assessmentLabel(r.visual_sample,'visual')+'。未发起模型请求。');}catch(e){notice('保存判定失败：'+e.message);}finally{busy=false;render();}
+ try{const r=await request('POST','visual-review',{account_id:account.account_id,sample_id:sample.id,verdict});if(r.account_id!==account.account_id||r.visual_sample?.id!==sample.id)throw new Error('返回的判定与目标样本不一致');const results=visualResults.get(account.account_id)||[],index=results.findIndex(v=>v.id===sample.id);if(index>=0)results[index]=r.visual_sample;if(jobDetail?.kind==='visual'){const index=jobDetail.results.findIndex(v=>v.id===sample.id);if(index>=0)jobDetail.results[index]=r.visual_sample;}notice('人工判定已保存：'+assessmentLabel(r.visual_sample,'visual')+'。未发起模型请求。');}catch(e){notice('保存判定失败：'+e.message);}finally{busy=false;render();}
 }
 async function downloadAll(){
  const account=currentAccount();if(!account||busy)return;
+ if(selectedJobId){busy=true;render();try{await readJob(selectedJobId);exportResult({email:account.email,name:account.name,...jobDetail},'quality-job-'+selectedJobId+'.json');}catch(e){notice('导出任务失败：'+e.message);}finally{busy=false;render();}return;}
  if(mode!=='fingerprint'){busy=true;render();try{const result=await fetchManualEvidence(account);exportResult({type:mode==='visual'?'pelican_visual':'candy_logic',email:account.email,name:account.name,...result},'quality-'+account.account_id+'-'+mode+'.json');}catch(e){notice('导出失败：'+e.message);}finally{busy=false;render();}return;}
  busy=true;render();try{const evidence=await fetchEvidence(account);exportResult({type:'modeltrace_fingerprint',email:account.email,name:account.name,...evidence},'quality-'+account.account_id+'-fingerprint.json');notice('完整挑战、输出与归因结果已准备导出。');}catch(e){notice('导出失败：'+e.message);}finally{busy=false;render();}
 }
 $('settings-open').onclick=showSettings;$('settings-back').onclick=leaveSettings;$('settings-reload').onclick=readSettings;$('settings-form').onsubmit=saveSettings;$('settings-search').oninput=renderSettingsAccounts;for(const id of ['settings-attempts','settings-output','settings-model'])$(id).oninput=settingsBudget;
-$('refresh').onclick=refresh;$('account').onchange=()=>{selectedId=$('account').value;render();};
-for(const key of ['fingerprint','visual','logic'])$('mode-'+key).onclick=()=>{if(busy)return;mode=key;render();};
-$('visual-count').onchange=()=>render();$('start').onclick=()=>{const account=currentAccount();if(account&&!unavailable(account,mode!=='fingerprint'))return mode!=='fingerprint'?manualProbe(account):probe(account);};
-$('stop').onclick=()=>{stopRequested=true;render();};$('download-all').onclick=downloadAll;$('export-copy').onclick=copyExport;$('export-close').onclick=()=>$('export-dialog').close();
+$('refresh').onclick=refresh;$('account').onchange=()=>{selectedId=$('account').value;selectedJobId='';jobDetail=null;render();};
+$('batch-all').onchange=()=>{batchAccounts=$('batch-all').checked?new Set(snapshot.accounts.filter(a=>a.enabled).map(a=>a.account_id)):new Set();render();};
+for(const key of ['fingerprint','visual','logic'])$('mode-'+key).onclick=()=>{if(busy)return;mode=key;selectedJobId='';jobDetail=null;render();};
+$('visual-count').onchange=()=>render();$('start').onclick=submitJobs;$('download-all').onclick=downloadAll;$('export-copy').onclick=copyExport;$('export-close').onclick=()=>$('export-dialog').close();
+window.addEventListener('pagehide',()=>{pageClosed=true;clearTimeout(pollTimer);});
 window.addEventListener('codex-proxy-themechange',theme);theme();if(bridge){if(bridge.page?.id==='probe-settings')showSettings();else refresh();}else notice('请从 CPS → 插件 → 扩展页打开此页面。');
 </script>
 </html>
